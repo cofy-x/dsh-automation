@@ -1,0 +1,6 @@
+- insert:
+    - id: dsh-automation-fake-llm
+      name: ./fake-llm.mjs
+
+- id: dsh-automation-app
+  inject: [automation, automationStartup, agents, agentDefaultModel, sessions, sessionPersistence, automationFakeLlm]

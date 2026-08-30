@@ -1,0 +1,9 @@
+# Bundle patch contributed when dsh-automation is installed into a DSH profile.
+- insert:
+    - id: dsh-automation-startup
+      name: dsh-automation/startup
+    - id: dsh-automation
+      name: dsh-automation
+    - id: dsh-automation-app
+      name: dsh-automation/app
+      inject: [automation, automationStartup, agents, agentDefaultModel, sessions, sessionPersistence]
