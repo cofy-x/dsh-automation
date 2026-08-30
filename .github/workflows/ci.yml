@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality (ubuntu, node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24 runtime
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10, Node 24 runtime
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0, Node 24 runtime
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install exact dependency graph
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check peer dependency closure
+        run: pnpm peers check
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      - name: Verify package contents and lifecycle
+        run: pnpm pack --dry-run
+      - name: Import the built public entry point
+        run: node --input-type=module -e "import('./lib/index.js').then((m) => { if (typeof m.default !== 'function' || typeof m.AutomationService !== 'function') process.exit(1) })"
+      - name: Verify tracked files remain clean
+        run: test -z "$(git status --porcelain)"
+
+  required:
+    name: required
+    if: ${{ always() }}
+    needs: [quality]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+        run: test "$QUALITY_RESULT" = success
