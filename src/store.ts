@@ -45,6 +45,17 @@ export interface RunEvent {
   readonly data: unknown
 }
 
+/** Store and queue health projection for operators and supervisors. */
+export interface AutomationStatus {
+  readonly health: 'ok'
+  readonly schemaVersion: number
+  readonly checkedAt: number
+  readonly runs: Readonly<Record<RunState, number>>
+  readonly queued: { readonly count: number; readonly oldestCreatedAt?: number }
+  readonly active: number
+  readonly expired: { readonly undispatched: number; readonly dispatched: number }
+}
+
 /** Durable store shared by management processes and one or more local Workers. */
 export class AutomationStore {
   private constructor(private readonly db: DatabaseSync) {}
@@ -120,6 +131,42 @@ export class AutomationStore {
       ? this.db.prepare('SELECT * FROM runs ORDER BY created_at DESC, id DESC').all()
       : this.db.prepare('SELECT * FROM runs WHERE state = ? ORDER BY created_at DESC, id DESC').all(state)
     return rows.map(row => decodeRun(row as SqlRow))
+  }
+
+  /** Return a bounded health projection without reading prompts or Session data. */
+  status(now: number = Date.now()): AutomationStatus {
+    if (!Number.isSafeInteger(now) || now < 0) throw new AutomationError('INVALID_REQUEST', 'now must be a non-negative safe integer')
+    const states: RunState[] = ['queued', 'claimed', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'indeterminate']
+    const runs = Object.fromEntries(states.map(state => [state, 0])) as Record<RunState, number>
+    for (const row of this.db.prepare('SELECT state, count(*) AS count FROM runs GROUP BY state').all() as SqlRow[]) {
+      runs[String(row['state']) as RunState] = Number(row['count'])
+    }
+    const queued = this.db.prepare(`
+      SELECT count(*) AS count, min(created_at) AS oldest_created_at
+      FROM runs WHERE state = 'queued'
+    `).get() as SqlRow
+    const expired = this.db.prepare(`
+      SELECT
+        sum(CASE WHEN dispatched_at IS NULL THEN 1 ELSE 0 END) AS undispatched,
+        sum(CASE WHEN dispatched_at IS NOT NULL THEN 1 ELSE 0 END) AS dispatched
+      FROM attempts WHERE state IN ('claimed', 'running', 'cancelling') AND lease_expires_at <= ?
+    `).get(now) as SqlRow
+    const oldestCreatedAt = queued['oldest_created_at'] === null ? undefined : Number(queued['oldest_created_at'])
+    return {
+      health: 'ok',
+      schemaVersion: SCHEMA_VERSION,
+      checkedAt: now,
+      runs,
+      queued: {
+        count: Number(queued['count']),
+        ...(oldestCreatedAt === undefined ? {} : { oldestCreatedAt }),
+      },
+      active: runs.claimed + runs.running + runs.cancelling,
+      expired: {
+        undispatched: Number(expired['undispatched'] ?? 0),
+        dispatched: Number(expired['dispatched'] ?? 0),
+      },
+    }
   }
 
   /** Atomically claim the next eligible Run and mint its fenced Attempt. */

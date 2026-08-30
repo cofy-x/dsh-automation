@@ -1,0 +1,18 @@
+[Unit]
+Description=DeepSeek Harness durable automation Worker
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=DSH_HOME=%h/.dsh
+ExecStart=__DSH_EXECUTABLE__ --profile automation worker
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

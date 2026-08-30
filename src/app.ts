@@ -33,7 +33,22 @@ export function apply(ctx: Context): void {
       info: message => { ctx.logger.info(message) },
       warn: message => { ctx.logger.warn(message) },
     })
-    ctx.effect(() => worker.start(), 'dsh-automation: Worker')
+    if (startup.once) {
+      void worker.runOnce()
+        .then((result) => {
+          const human = result.claimedRunId === undefined
+            ? `idle\trecovered=${result.recovered}`
+            : `${result.claimedRunId}\tprocessed\trecovered=${result.recovered}`
+          write(startup.json, result, human)
+          exit(0)
+        })
+        .catch((error: unknown) => {
+          internals.stderr.write(`dsh-automation: ${error instanceof Error ? error.message : String(error)}\n`)
+          exit(1)
+        })
+    } else {
+      ctx.effect(() => worker.start(), 'dsh-automation: Worker')
+    }
     return
   }
   void runManagement(ctx.automation, startup)
@@ -71,6 +86,18 @@ async function runManagement(automation: AutomationService, startup: Exclude<Aut
     case 'list': {
       const runs = automation.list(startup.state)
       write(startup.json, runs, runs.map(runLine).join('\n'))
+      return
+    }
+    case 'status': {
+      const status = automation.status()
+      const oldest = status.queued.oldestCreatedAt === undefined
+        ? '-'
+        : `${Math.max(0, status.checkedAt - status.queued.oldestCreatedAt)}ms`
+      write(
+        startup.json,
+        status,
+        `ok\tschema=${status.schemaVersion}\tqueued=${status.queued.count}\tactive=${status.active}\texpired=${status.expired.undispatched + status.expired.dispatched}\toldest=${oldest}`,
+      )
       return
     }
     case 'show': {

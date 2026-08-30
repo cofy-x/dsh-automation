@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cofy-x.dsh-automation</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__DSH_EXECUTABLE__</string>
+    <string>--profile</string>
+    <string>automation</string>
+    <string>worker</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DSH_HOME</key>
+    <string>__DSH_HOME__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_DIRECTORY__/dsh-automation.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIRECTORY__/dsh-automation.error.log</string>
+</dict>
+</plist>
