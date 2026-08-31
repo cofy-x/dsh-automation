@@ -10,7 +10,7 @@ export const AUTOMATION_STARTUP_SERVICE = 'automationStartup'
 
 /** Parsed automation application invocation. */
 export type AutomationStartup =
-  | { readonly mode: 'worker'; readonly pollMs: number; readonly leaseMs: number; readonly workerId?: string }
+  | { readonly mode: 'worker'; readonly pollMs: number; readonly leaseMs: number; readonly workerId?: string; readonly once: boolean; readonly json: boolean }
   | {
       readonly mode: 'submit'
       readonly prompt: string
@@ -25,6 +25,7 @@ export type AutomationStartup =
       readonly json: boolean
     }
   | { readonly mode: 'list'; readonly state?: RunState; readonly json: boolean }
+  | { readonly mode: 'status'; readonly json: boolean }
   | { readonly mode: 'show'; readonly runId: string; readonly json: boolean }
   | { readonly mode: 'cancel'; readonly runId: string; readonly json: boolean }
 
@@ -52,12 +53,17 @@ export function apply(ctx: Context): void {
     .option('--poll-ms <milliseconds>', 'queue poll interval', positiveInteger, 1_000)
     .option('--lease-ms <milliseconds>', 'Attempt lease duration', positiveInteger, 30_000)
     .option('--worker-id <id>', 'stable diagnostic Worker id')
-    .action((options: { pollMs: number; leaseMs: number; workerId?: string }) => {
+    .option('--once', 'run one bounded recovery-and-claim cycle, then exit', false)
+    .option('--json', 'print the --once result as machine-readable JSON', false)
+    .action((options: { pollMs: number; leaseMs: number; workerId?: string; once: boolean; json: boolean }) => {
+      if (options.json && !options.once) {
+        program.error('error: worker --json requires --once')
+      }
       if (options.pollMs * 3 >= options.leaseMs) {
         program.error('error: --lease-ms must be greater than three polling intervals')
       }
       ctx.provide(AUTOMATION_STARTUP_SERVICE, {
-        mode: 'worker', pollMs: options.pollMs, leaseMs: options.leaseMs,
+        mode: 'worker', pollMs: options.pollMs, leaseMs: options.leaseMs, once: options.once, json: options.json,
         ...(options.workerId === undefined ? {} : { workerId: requiredText(options.workerId, '--worker-id') }),
       } satisfies AutomationStartup)
     })
@@ -115,6 +121,13 @@ export function apply(ctx: Context): void {
       ctx.provide(AUTOMATION_STARTUP_SERVICE, {
         mode: 'list', json: options.json, ...(options.state === undefined ? {} : { state: options.state }),
       } satisfies AutomationStartup)
+    })
+
+  program.command('status')
+    .description('Check the automation store and print bounded queue health')
+    .option('--json', 'print machine-readable JSON', false)
+    .action((options: { json: boolean }) => {
+      ctx.provide(AUTOMATION_STARTUP_SERVICE, { mode: 'status', json: options.json } satisfies AutomationStartup)
     })
 
   for (const mode of ['show', 'cancel'] as const) {

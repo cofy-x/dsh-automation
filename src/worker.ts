@@ -5,11 +5,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type Agent, type AgentHandle, type ModelSelection } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
-import type { RunClaim, RunSettlement, TargetSpec } from './domain.ts'
+import type { RunClaim, RunId, RunSettlement, TargetSpec } from './domain.ts'
 import type { AutomationService } from './index.ts'
 
 /** Worker deployment settings resolved from the application command. */
@@ -17,6 +17,17 @@ export interface WorkerOptions {
   readonly workerId?: string
   readonly pollMs: number
   readonly leaseMs: number
+}
+
+/** Result of one bounded recovery-and-claim cycle. */
+export interface WorkerCycleResult {
+  readonly recovered: number
+  readonly claimedRunId?: RunId
+}
+
+/** Internal deterministic checkpoints used by process-crash integration tests. */
+export interface WorkerHooks {
+  checkpoint?(point: 'after-claim' | 'after-dispatch' | 'before-settle', claim: RunClaim): void | Promise<void>
 }
 
 /** Process logger used by the Worker. */
@@ -38,8 +49,15 @@ export class AutomationWorker {
     private readonly automation: AutomationService,
     private readonly options: WorkerOptions,
     private readonly log: WorkerLog,
+    private readonly hooks: WorkerHooks = {},
   ) {
     this.workerId = options.workerId ?? `${hostname()}:${process.pid}`
+  }
+
+  /** Execute one bounded cycle and propagate operational failures to the caller. */
+  async runOnce(): Promise<WorkerCycleResult> {
+    if (this.timer !== undefined || this.pumpTask !== undefined) throw new Error('automation Worker is already started')
+    return await this.pump()
   }
 
   /** Start polling immediately and keep the process live until disposed. */
@@ -60,56 +78,66 @@ export class AutomationWorker {
 
   private requestPump(): void {
     if (this.pumpTask !== undefined || this.stopping) return
-    const task = this.pump()
+    const task = this.pump().then(
+      () => {},
+      (error: unknown) => { this.log.warn(`dsh-automation: Worker pump failed: ${errorMessage(error)}`) },
+    )
     this.pumpTask = task
     void task.finally(() => {
       if (this.pumpTask === task) this.pumpTask = undefined
     })
   }
 
-  private async pump(): Promise<void> {
-    if (this.stopping) return
-    try {
-      const now = Date.now()
-      this.automation.recoverUndispatchedExpired(now)
-      await this.recoverExpiredDispatched(now)
-      if (this.stopping) return
-      const claim = this.automation.claimNext(this.workerId, Date.now(), this.options.leaseMs)
-      if (claim === undefined) return
-      await this.execute(claim)
-    } catch (error) {
-      this.log.warn(`dsh-automation: Worker pump failed: ${errorMessage(error)}`)
-    }
+  private async pump(): Promise<WorkerCycleResult> {
+    if (this.stopping) return { recovered: 0 }
+    const now = Date.now()
+    const undispatched = this.automation.recoverUndispatchedExpired(now)
+    const dispatched = await this.recoverExpiredDispatched(now)
+    const recovered = undispatched.length + dispatched
+    if (this.stopping) return { recovered }
+    const claim = this.automation.claimNext(this.workerId, Date.now(), this.options.leaseMs)
+    if (claim === undefined) return { recovered }
+    await this.checkpoint('after-claim', claim)
+    await this.execute(claim)
+    return { recovered, claimedRunId: claim.run.id }
   }
 
-  private async recoverExpiredDispatched(now: number): Promise<void> {
+  private async recoverExpiredDispatched(now: number): Promise<number> {
+    let recovered = 0
     for (const ref of this.automation.expiredDispatched(now)) {
       try {
         const inspection = await this.ctx.sessionPersistence.inspect(SessionId(ref.sessionId))
         const settlement = settlementFromEvents(inspection.events)
         if (settlement !== undefined) {
           this.automation.settleExpired(ref, settlement, Date.now())
+          recovered += 1
         } else if (safeToResumeBeforeTurn(inspection.events)) {
           const claim = this.automation.reclaimDispatched(ref, this.workerId, Date.now(), this.options.leaseMs)
-          if (claim !== undefined) await this.execute(claim, true)
+          if (claim !== undefined) {
+            await this.execute(claim, true)
+            recovered += 1
+          }
         } else {
           this.automation.settleExpired(ref, indeterminate('canonical Session has no terminal turn and is not safely resumable'), Date.now())
+          recovered += 1
         }
       } catch (error) {
         try {
           this.automation.settleExpired(ref, indeterminate(`canonical Session recovery failed: ${errorMessage(error)}`), Date.now())
+          recovered += 1
         } catch (settleError) {
           this.log.warn(`dsh-automation: ${ref.runId} recovery settlement lost: ${errorMessage(settleError)}`)
         }
       }
     }
+    return recovered
   }
 
   private async execute(initialClaim: RunClaim, resume = false): Promise<void> {
     let claim = initialClaim
     let handle: AgentHandle | undefined
     let heartbeat: ReturnType<typeof setInterval> | undefined
-    let deliveryStarted = false
+    let deliveryStarted = resume
     let leaseFailure: unknown
     try {
       const renewLease = (): void => {
@@ -132,8 +160,14 @@ export class AutomationWorker {
         return
       }
       const selection = resolveSelection(this.ctx, claim.run.target)
-      handle = await this.createAgent(claim, selection)
+      handle = await this.createAgent(claim, selection, resume)
       this.activeAgent = handle.agent
+      if (resume) {
+        const pending = [...handle.agent.inbox.nextStep, ...handle.agent.inbox.nextTurn]
+          .filter(message => !isRecoveryWakeMessage(message))
+        if (pending.length === 0) throw new Error('canonical Session recovery found no pending task message')
+        handle.agent.steer(recoveryWakeMessage())
+      }
       await handle.agent.whenIdle()
       if (resume) {
         if (heartbeat !== undefined) clearInterval(heartbeat)
@@ -142,6 +176,7 @@ export class AutomationWorker {
         await this.ctx.sessions.flush(handle.agent.session)
         const settlement = settlementFromEvents(handle.agent.session.events)
           ?? indeterminate('resumed canonical Session settled without a terminal turn')
+        await this.checkpoint('before-settle', claim)
         this.automation.settle(claim, settlement, Date.now())
         this.log.info(`dsh-automation: ${claim.run.id} ${settlement.state} after recovery`)
         return
@@ -158,6 +193,7 @@ export class AutomationWorker {
       deliveryStarted = true
       await this.ctx.sessions.flush(handle.agent.session)
       claim = { ...claim, run: this.automation.markRunning(claim, Date.now()) }
+      await this.checkpoint('after-dispatch', claim)
       if (claim.run.state === 'cancelling') handle.agent.cancel({ kind: 'user' })
       await handle.agent.whenIdle()
       if (heartbeat !== undefined) clearInterval(heartbeat)
@@ -166,6 +202,7 @@ export class AutomationWorker {
       await this.ctx.sessions.flush(handle.agent.session)
       const settlement = settlementFromEvents(handle.agent.session.events.slice(firstSeq))
         ?? indeterminate('canonical Session settled without a terminal turn')
+      await this.checkpoint('before-settle', claim)
       this.automation.settle(claim, settlement, Date.now())
       this.log.info(`dsh-automation: ${claim.run.id} ${settlement.state}`)
     } catch (error) {
@@ -184,10 +221,29 @@ export class AutomationWorker {
     }
   }
 
-  private async createAgent(claim: RunClaim, selection: ModelSelection): Promise<AgentHandle> {
+  private async checkpoint(point: 'after-claim' | 'after-dispatch' | 'before-settle', claim: RunClaim): Promise<void> {
+    await this.hooks.checkpoint?.(point, claim)
+  }
+
+  private async createAgent(claim: RunClaim, selection: ModelSelection, resume: boolean): Promise<AgentHandle> {
     const presets = this.ctx.get('agentPresets')
     if (presets === undefined && claim.run.target.preset !== undefined) {
       throw new Error(`target preset ${claim.run.target.preset} requires the agentPresets service`)
+    }
+    const setup = async (agentCtx: Context): Promise<void> => {
+      if (resume) installRecoveryWakeFilter(agentCtx)
+      if (presets === undefined) {
+          installModelSelection(agentCtx, { current: selection, assembled: undefined })
+      } else {
+        await presets.mount(agentCtx, claim.run.target.preset)
+      }
+    }
+    if (resume) {
+      return await this.ctx.agents.resume({
+        resumeSessionId: SessionId(claim.sessionId),
+        agentOptions: { provider: selection.provider, model: selection.model },
+        setup,
+      })
     }
     return await this.ctx.agents.create({
       sessionId: SessionId(claim.sessionId),
@@ -196,11 +252,7 @@ export class AutomationWorker {
         ...(claim.run.target.preset === undefined ? {} : { agentPreset: claim.run.target.preset }),
       },
       agentOptions: { provider: selection.provider, model: selection.model },
-      setup: presets === undefined
-        ? (agentCtx) => {
-            installModelSelection(agentCtx, { current: selection, assembled: undefined })
-          }
-        : async (agentCtx) => { await presets.mount(agentCtx, claim.run.target.preset) },
+      setup,
     })
   }
 }
@@ -221,6 +273,46 @@ function applyPermission(ctx: Context, agent: Agent, target: TargetSpec): void {
   const permissions = ctx.get('permissionPresets')
   if (permissions === undefined) throw new Error(`target permission preset ${target.permissionPreset} requires the permissionPresets service`)
   permissions.set(agent.session, target.permissionPreset)
+}
+
+const RECOVERY_WAKE_SECTION = 'automation-recovery-wake'
+const RECOVERY_WAKE_TEXT = 'Wake the recovered durable inbox; omit this control message from the model request.'
+
+/** Create an identified steering item that wakes only through published Agent APIs. */
+export function recoveryWakeMessage(): UserMessage {
+  return createUserMessage({
+    content: [{ type: 'text', text: RECOVERY_WAKE_TEXT }],
+    source: {
+      kind: 'plugin',
+      plugin: 'dsh-automation',
+      form: 'snapshot',
+      sections: [{ name: RECOVERY_WAKE_SECTION, text: RECOVERY_WAKE_TEXT }],
+    },
+  })
+}
+
+/** Recognize only this plugin's exact non-model-facing recovery control item. */
+export function isRecoveryWakeMessage(message: UserMessage): boolean {
+  const source = message.source
+  return source.kind === 'plugin'
+    && source.plugin === 'dsh-automation'
+    && source.form === 'snapshot'
+    && source.sections.length === 1
+    && source.sections[0]?.name === RECOVERY_WAKE_SECTION
+    && source.sections[0].text === RECOVERY_WAKE_TEXT
+}
+
+/** Strip claimed recovery steering after it wakes the loop but before request material is committed. */
+function installRecoveryWakeFilter(ctx: Context): void {
+  ctx.on('agent/pre-step', async ({ messages }, next) => {
+    const wakeIds = new Set(messages.filter(isRecoveryWakeMessage).map(message => message.id))
+    const decision = await next()
+    if (decision.kind === 'reject' || wakeIds.size === 0) return decision
+    return {
+      ...decision,
+      messages: decision.messages.filter(message => !wakeIds.has(message.id)),
+    }
+  })
 }
 
 function automationMessage(claim: RunClaim) {

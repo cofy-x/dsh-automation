@@ -44,4 +44,41 @@ describe('automation startup command', () => {
       internals.stderr = original
     }
   })
+
+  it('publishes a bounded machine-readable Worker cycle', () => {
+    const { startup, exitCode } = parse([
+      'worker', '--once', '--json', '--worker-id', 'supervisor-probe', '--poll-ms', '500', '--lease-ms', '5000',
+    ])
+
+    expect(exitCode).toBeUndefined()
+    expect(startup).toEqual({
+      mode: 'worker',
+      pollMs: 500,
+      leaseMs: 5000,
+      workerId: 'supervisor-probe',
+      once: true,
+      json: true,
+    })
+  })
+
+  it('publishes the bounded store status command', () => {
+    const { startup, exitCode } = parse(['status', '--json'])
+
+    expect(exitCode).toBeUndefined()
+    expect(startup).toEqual({ mode: 'status', json: true })
+  })
+
+  it('rejects JSON output for a long-lived Worker', () => {
+    const original = internals.stderr
+    let diagnostic = ''
+    internals.stderr = { write: (text: string) => { diagnostic += text } }
+    try {
+      const { startup, exitCode } = parse(['worker', '--json'])
+      expect(startup).toBeUndefined()
+      expect(exitCode).toBe(1)
+      expect(diagnostic).toContain('worker --json requires --once')
+    } finally {
+      internals.stderr = original
+    }
+  })
 })

@@ -5,7 +5,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import z from '@deepseek-ai/schemastery'
 import type { RunClaim, RunId, RunSettlement, RunState, RunView, SubmitRunRequest } from './domain.ts'
-import { AutomationStore, type ExpiredAttempt, type RunEvent } from './store.ts'
+import { AutomationStore, type AutomationStatus, type ExpiredAttempt, type RunEvent } from './store.ts'
 
 export * from './domain.ts'
 export { AutomationStore, SCHEMA_VERSION } from './store.ts'
@@ -56,6 +56,11 @@ export class AutomationService extends Service {
   /** List Runs newest-first. */
   list(state?: RunState): RunView[] {
     return this.store.list(state)
+  }
+
+  /** Read bounded store and queue health for operators. */
+  status(now: number = Date.now()): AutomationStatus {
+    return this.store.status(now)
   }
 
   /** Atomically claim the next eligible Run. */

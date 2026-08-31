@@ -157,4 +157,36 @@ describe('AutomationStore', () => {
     expect(first.claimNext('worker-a', 101, 100)).toBeDefined()
     expect(second.claimNext('worker-b', 101, 100)).toBeUndefined()
   })
+
+  it('reports bounded store and queue health including expired lease classes', async () => {
+    const store = await openStore()
+    store.submit(request({ prompt: 'queued-a' }), 90)
+    store.submit(request({ prompt: 'queued-b' }), 100)
+    const undispatched = store.claimNext('worker-a', 110, 10)!
+    const dispatchedRun = store.submit(request({ prompt: 'dispatched', priority: 9 }), 111).run
+    const dispatched = store.claimNext('worker-b', 112, 10)!
+    expect(dispatched.run.id).toBe(dispatchedRun.id)
+    store.markRunning(dispatched, 113)
+
+    expect(store.status(123)).toEqual({
+      health: 'ok',
+      schemaVersion: 1,
+      checkedAt: 123,
+      runs: {
+        queued: 1,
+        claimed: 1,
+        running: 1,
+        cancelling: 0,
+        succeeded: 0,
+        failed: 0,
+        cancelled: 0,
+        indeterminate: 0,
+      },
+      queued: { count: 1, oldestCreatedAt: 100 },
+      active: 2,
+      expired: { undispatched: 1, dispatched: 1 },
+    })
+    expect(() => store.status(-1)).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+    expect(undispatched.run.prompt).toBe('queued-a')
+  })
 })

@@ -8,13 +8,17 @@ DeepSeek Harness 的持久化后台自动化核心。
 
 ```sh
 dsh --profile automation worker
+dsh --profile automation worker --once --json
 dsh --profile automation submit "检查当前项目的测试失败"
+dsh --profile automation status
 dsh --profile automation list
 dsh --profile automation show <run-id>
 dsh --profile automation cancel <run-id>
 ```
 
 持久化层使用 SQLite WAL、Trigger 范围幂等键、带租约的 Attempt、fencing token、确定性 Session ID；当崩溃的 Agent turn 可能已经产生外部副作用时，恢复会明确进入 `indeterminate`，不会盲目重试。
+
+仅有 inbox 的恢复完全使用已发布的 Agent 契约：插件自有的 steering item 唤醒恢复后的 loop，Agent 作用域内的 `agent/pre-step` 监听器会在提交 request material 前移除该控制项。原始的带标识任务消息仍是 canonical 消息且只投递一次；`turn/start` 之后发生的崩溃绝不会自动重放。
 
 把 checkout 安装到专用 profile，再交给操作系统长期托管 Worker：
 
@@ -24,6 +28,8 @@ dsh --profile automation worker
 ```
 
 第一阶段建议用 launchd、systemd 或其他 supervisor 运行单个 Worker。管理命令是访问 `$DSH_HOME/automation/automation.db` 的短进程；Console 退出不会影响自动化。Cron 与 webhook 应保持为独立 Trigger 插件，通过 `ctx.automation` 提交 Run。
+
+稳定退出契约、健康语义、升级步骤以及 launchd/systemd 模板见[运维指南](docs/operations.zh.md)。`status` 检查持久化存储和队列；Worker 进程是否存活仍以 supervisor 为准。
 
 ## 开发
 
