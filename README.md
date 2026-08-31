@@ -29,7 +29,7 @@ dsh --profile automation worker
 
 Use launchd, systemd, or another process supervisor with a single Worker in the first deployment. Management commands are short-lived processes over the same database at `$DSH_HOME/automation/automation.db`; stopping Console does not stop automation. Cron and webhook integrations should remain separate Trigger plugins and submit through `ctx.automation`.
 
-See [the operations guide](docs/operations.md) for the stable exit contract, health semantics, upgrade procedure, and launchd/systemd templates. `status` checks the durable store and queue; the supervisor remains the authority for Worker-process liveness.
+See [the operations guide](docs/operations.md) for the stable exit contract, health semantics, upgrade procedure, and launchd/systemd templates. The [architecture guide](docs/architecture.md) defines the module boundaries and safety invariants that keep persistence separate from canonical DSH execution. `status` checks the durable store and queue; the supervisor remains the authority for Worker-process liveness.
 
 ## Development
 

@@ -29,7 +29,7 @@ dsh --profile automation worker
 
 第一阶段建议用 launchd、systemd 或其他 supervisor 运行单个 Worker。管理命令是访问 `$DSH_HOME/automation/automation.db` 的短进程；Console 退出不会影响自动化。Cron 与 webhook 应保持为独立 Trigger 插件，通过 `ctx.automation` 提交 Run。
 
-稳定退出契约、健康语义、升级步骤以及 launchd/systemd 模板见[运维指南](docs/operations.zh.md)。`status` 检查持久化存储和队列；Worker 进程是否存活仍以 supervisor 为准。
+稳定退出契约、健康语义、升级步骤以及 launchd/systemd 模板见[运维指南](docs/operations.zh.md)。[架构指南](docs/architecture.zh.md)定义了模块边界与安全不变量，使持久化编排和 canonical DSH 执行保持分离。`status` 检查持久化存储和队列；Worker 进程是否存活仍以 supervisor 为准。
 
 ## 开发
 
