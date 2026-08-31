@@ -10,10 +10,11 @@
   },
   "scripts": {
     "build": "tsc -b && tsdown --config-loader tsx",
+    "check:source-size": "node scripts/check-source-size.mjs",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.vitest.json --pretty false",
     "prepare": "pnpm run build",
-    "prepack": "pnpm run typecheck && pnpm test && pnpm run build"
+    "prepack": "pnpm run check:source-size && pnpm run typecheck && pnpm test && pnpm run build"
   },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

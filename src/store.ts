@@ -1,123 +1,51 @@
 /** SQLite WAL persistence and transactional Run state transitions. */
 
 import { randomUUID } from 'node:crypto'
-import { chmod, lstat, mkdir, open } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   AutomationError,
-  decodeTarget,
-  decodeTrigger,
-  resolveSubmitRequest,
   type LeaseToken,
   type RunClaim,
   type RunId,
-  type RunOutcome,
   type RunSettlement,
   type RunState,
   type RunView,
   type SubmitRunRequest,
 } from './domain.ts'
+import { decodeRun, StoreDatabase } from './store/database.ts'
+import {
+  expiredDispatched as findExpiredDispatched,
+  reclaimDispatched as reclaimExpiredDispatched,
+  recoverUndispatchedExpired as recoverExpiredUndispatched,
+  settleExpired as settleExpiredAttempt,
+} from './store/recovery.ts'
+import { automationStatus, listRuns, requestRunCancel, runEvents, submitRun } from './store/runs.ts'
+import type { AutomationStatus, ExpiredAttempt, RunEvent, SqlRow, StoreOptions } from './store/types.ts'
 
-/** Current on-disk schema. Pre-release readers reject every other version. */
-export const SCHEMA_VERSION = 1
-
-interface StoreOptions {
-  readonly path: string
-  readonly busyTimeoutMs?: number
-}
-
-interface SqlRow extends Record<string, unknown> {}
-
-/** Expired dispatched Attempt that requires canonical Session recovery. */
-export interface ExpiredAttempt {
-  readonly runId: RunId
-  readonly attempt: number
-  readonly sessionId: string
-}
-
-/** One append-only audit record. */
-export interface RunEvent {
-  readonly seq: number
-  readonly runId: RunId
-  readonly at: number
-  readonly type: string
-  readonly data: unknown
-}
-
-/** Store and queue health projection for operators and supervisors. */
-export interface AutomationStatus {
-  readonly health: 'ok'
-  readonly schemaVersion: number
-  readonly checkedAt: number
-  readonly runs: Readonly<Record<RunState, number>>
-  readonly queued: { readonly count: number; readonly oldestCreatedAt?: number }
-  readonly active: number
-  readonly expired: { readonly undispatched: number; readonly dispatched: number }
-}
+export { SCHEMA_VERSION } from './store/database.ts'
+export type { AutomationStatus, ExpiredAttempt, RunEvent, StoreOptions } from './store/types.ts'
 
 /** Durable store shared by management processes and one or more local Workers. */
 export class AutomationStore {
-  private constructor(private readonly db: DatabaseSync) {}
+  private constructor(private readonly database: StoreDatabase) {}
+
+  private get db(): DatabaseSync {
+    return this.database.sql
+  }
 
   /** Validate the path, open SQLite, and initialize or verify schema v1. */
   static async open(options: StoreOptions): Promise<AutomationStore> {
-    const path = options.path === ':memory:' ? ':memory:' : resolve(options.path)
-    if (path !== ':memory:') await preparePrivateDatabase(path)
-    const db = new DatabaseSync(path)
-    try {
-      db.exec('PRAGMA foreign_keys = ON')
-      db.exec(`PRAGMA busy_timeout = ${busyTimeout(options.busyTimeoutMs)}`)
-      if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
-      initializeSchema(db)
-      return new AutomationStore(db)
-    } catch (error) {
-      db.close()
-      throw error
-    }
+    return new AutomationStore(await StoreDatabase.open(options))
   }
 
   /** Close this process's SQLite connection. */
   close(): void {
-    this.db.close()
+    this.database.close()
   }
 
   /** Submit one immutable Run, returning the existing Run for a duplicate idempotency key. */
   submit(request: SubmitRunRequest, now = Date.now()): { readonly run: RunView; readonly created: boolean } {
-    const resolved = resolveSubmitRequest(request, now)
-    return this.transaction(() => {
-      const key = resolved.trigger.idempotencyKey
-      if (key !== undefined) {
-        const existing = this.db.prepare(`
-          SELECT * FROM runs WHERE trigger_kind = ? AND trigger_source_id = ? AND idempotency_key = ?
-        `).get(resolved.trigger.kind, resolved.trigger.sourceId, key) as SqlRow | undefined
-        if (existing !== undefined) return { run: decodeRun(existing), created: false }
-      }
-      const id = `run-${randomUUID()}` as RunId
-      this.db.prepare(`
-        INSERT INTO runs (
-          id, state, prompt, target_json, trigger_json, trigger_kind, trigger_source_id,
-          idempotency_key, priority, max_attempts, attempt_count, created_at, updated_at,
-          available_at, retry_of
-        ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-      `).run(
-        id,
-        resolved.prompt,
-        JSON.stringify(resolved.target),
-        JSON.stringify(resolved.trigger),
-        resolved.trigger.kind,
-        resolved.trigger.sourceId,
-        key ?? null,
-        resolved.priority,
-        resolved.maxAttempts,
-        now,
-        now,
-        resolved.availableAt,
-        resolved.retryOf ?? null,
-      )
-      this.event(id, now, 'submitted', { trigger: resolved.trigger })
-      return { run: this.requireRun(id), created: true }
-    })
+    return submitRun(this.database, request, now)
   }
 
   /** Return one Run by id. */
@@ -127,46 +55,12 @@ export class AutomationStore {
 
   /** List Runs newest-first, optionally restricted to one state. */
   list(state?: RunState): RunView[] {
-    const rows = state === undefined
-      ? this.db.prepare('SELECT * FROM runs ORDER BY created_at DESC, id DESC').all()
-      : this.db.prepare('SELECT * FROM runs WHERE state = ? ORDER BY created_at DESC, id DESC').all(state)
-    return rows.map(row => decodeRun(row as SqlRow))
+    return listRuns(this.database, state)
   }
 
   /** Return a bounded health projection without reading prompts or Session data. */
   status(now: number = Date.now()): AutomationStatus {
-    if (!Number.isSafeInteger(now) || now < 0) throw new AutomationError('INVALID_REQUEST', 'now must be a non-negative safe integer')
-    const states: RunState[] = ['queued', 'claimed', 'running', 'cancelling', 'succeeded', 'failed', 'cancelled', 'indeterminate']
-    const runs = Object.fromEntries(states.map(state => [state, 0])) as Record<RunState, number>
-    for (const row of this.db.prepare('SELECT state, count(*) AS count FROM runs GROUP BY state').all() as SqlRow[]) {
-      runs[String(row['state']) as RunState] = Number(row['count'])
-    }
-    const queued = this.db.prepare(`
-      SELECT count(*) AS count, min(created_at) AS oldest_created_at
-      FROM runs WHERE state = 'queued'
-    `).get() as SqlRow
-    const expired = this.db.prepare(`
-      SELECT
-        sum(CASE WHEN dispatched_at IS NULL THEN 1 ELSE 0 END) AS undispatched,
-        sum(CASE WHEN dispatched_at IS NOT NULL THEN 1 ELSE 0 END) AS dispatched
-      FROM attempts WHERE state IN ('claimed', 'running', 'cancelling') AND lease_expires_at <= ?
-    `).get(now) as SqlRow
-    const oldestCreatedAt = queued['oldest_created_at'] === null ? undefined : Number(queued['oldest_created_at'])
-    return {
-      health: 'ok',
-      schemaVersion: SCHEMA_VERSION,
-      checkedAt: now,
-      runs,
-      queued: {
-        count: Number(queued['count']),
-        ...(oldestCreatedAt === undefined ? {} : { oldestCreatedAt }),
-      },
-      active: runs.claimed + runs.running + runs.cancelling,
-      expired: {
-        undispatched: Number(expired['undispatched'] ?? 0),
-        dispatched: Number(expired['dispatched'] ?? 0),
-      },
-    }
+    return automationStatus(this.database, now)
   }
 
   /** Atomically claim the next eligible Run and mint its fenced Attempt. */
@@ -286,144 +180,27 @@ export class AutomationStore {
 
   /** Request cancellation, atomically terminating a queued Run. */
   requestCancel(id: RunId, now: number): RunView {
-    return this.transaction(() => {
-      const run = this.requireRun(id)
-      if (terminal(run.state)) return run
-      if (run.state === 'queued') {
-        this.db.prepare(`
-          UPDATE runs SET state = 'cancelled', cancel_requested_at = ?, updated_at = ?, outcome = 'cancelled'
-          WHERE id = ? AND state = 'queued'
-        `).run(now, now, id)
-        this.event(id, now, 'cancelled', { beforeDispatch: true })
-      } else {
-        this.db.prepare(`
-          UPDATE runs SET state = 'cancelling', cancel_requested_at = ?, updated_at = ?
-          WHERE id = ? AND state IN ('claimed', 'running')
-        `).run(now, now, id)
-        this.db.prepare(`
-          UPDATE attempts SET state = 'cancelling'
-          WHERE run_id = ? AND attempt_no = ? AND state IN ('claimed', 'running')
-        `).run(id, run.currentAttempt as number)
-        this.event(id, now, 'cancel-requested', { attempt: run.currentAttempt })
-      }
-      return this.requireRun(id)
-    })
+    return requestRunCancel(this.database, id, now)
   }
 
   /** Requeue expired claims that provably never crossed the durable dispatch checkpoint. */
   recoverUndispatchedExpired(now: number): RunId[] {
-    return this.transaction(() => {
-      const rows = this.db.prepare(`
-        SELECT a.run_id, a.attempt_no, r.max_attempts
-        FROM attempts a JOIN runs r ON r.id = a.run_id AND r.current_attempt = a.attempt_no
-        WHERE r.state IN ('claimed', 'cancelling') AND a.state IN ('claimed', 'cancelling')
-          AND a.dispatched_at IS NULL AND a.lease_expires_at <= ?
-      `).all(now) as SqlRow[]
-      const recovered: RunId[] = []
-      for (const row of rows) {
-        const runId = row['run_id'] as RunId
-        const attempt = Number(row['attempt_no'])
-        const exhausted = attempt >= Number(row['max_attempts'])
-        this.db.prepare(`
-          UPDATE attempts SET state = 'lost', finished_at = ?, outcome = 'not-dispatched', error = 'worker lease expired before durable dispatch'
-          WHERE run_id = ? AND attempt_no = ? AND dispatched_at IS NULL AND lease_expires_at <= ?
-        `).run(now, runId, attempt, now)
-        this.db.prepare(`
-          UPDATE runs SET state = ?, updated_at = ?, current_attempt = NULL,
-            outcome = ?, error = ?
-          WHERE id = ? AND current_attempt = ? AND state IN ('claimed', 'cancelling')
-        `).run(
-          exhausted ? 'failed' : 'queued',
-          now,
-          exhausted ? 'not-dispatched' : null,
-          exhausted ? 'all Attempts were lost before durable dispatch' : null,
-          runId,
-          attempt,
-        )
-        this.event(runId, now, exhausted ? 'failed' : 'requeued', { attempt, reason: 'lease-expired-before-dispatch' })
-        recovered.push(runId)
-      }
-      return recovered
-    })
+    return recoverExpiredUndispatched(this.database, now)
   }
 
   /** List expired dispatched Attempts that require canonical Session inspection. */
   expiredDispatched(now: number): ExpiredAttempt[] {
-    const rows = this.db.prepare(`
-      SELECT a.run_id, a.attempt_no, a.session_id
-      FROM attempts a JOIN runs r ON r.id = a.run_id AND r.current_attempt = a.attempt_no
-      WHERE r.state IN ('running', 'cancelling') AND a.dispatched_at IS NOT NULL AND a.lease_expires_at <= ?
-      ORDER BY a.lease_expires_at ASC, a.run_id ASC
-    `).all(now) as SqlRow[]
-    return rows.map(row => ({
-      runId: row['run_id'] as RunId,
-      attempt: Number(row['attempt_no']),
-      sessionId: String(row['session_id']),
-    }))
+    return findExpiredDispatched(this.database, now)
   }
 
   /** Fence and take ownership of an expired dispatched Attempt for safe pre-turn resume. */
   reclaimDispatched(ref: ExpiredAttempt, workerId: string, now: number, leaseDurationMs: number): RunClaim | undefined {
-    validateWorkerLease(workerId, now, leaseDurationMs)
-    return this.transaction(() => {
-      const token = randomUUID() as LeaseToken
-      const leaseExpiresAt = now + leaseDurationMs
-      const changed = this.db.prepare(`
-        UPDATE attempts SET worker_id = ?, lease_token = ?, lease_expires_at = ?
-        WHERE run_id = ? AND attempt_no = ? AND session_id = ?
-          AND state IN ('running', 'cancelling') AND dispatched_at IS NOT NULL
-          AND lease_expires_at <= ?
-      `).run(workerId, token, leaseExpiresAt, ref.runId, ref.attempt, ref.sessionId, now).changes
-      if (changed !== 1) return undefined
-      const run = this.requireRun(ref.runId)
-      if (run.currentAttempt !== ref.attempt || (run.state !== 'running' && run.state !== 'cancelling')) {
-        throw new AutomationError('INVALID_TRANSITION', `run ${ref.runId} no longer owns attempt ${ref.attempt}`)
-      }
-      this.event(ref.runId, now, 'recovered-claim', { attempt: ref.attempt, workerId, leaseExpiresAt })
-      return {
-        run,
-        attempt: ref.attempt,
-        workerId,
-        leaseToken: token,
-        leaseExpiresAt,
-        sessionId: ref.sessionId,
-      }
-    })
+    return reclaimExpiredDispatched(this.database, ref, workerId, now, leaseDurationMs)
   }
 
   /** Settle an expired dispatched Attempt from canonical Session recovery evidence. */
   settleExpired(ref: ExpiredAttempt, settlement: RunSettlement, now: number): RunView {
-    return this.transaction(() => {
-      const changed = this.db.prepare(`
-        UPDATE attempts SET state = ?, finished_at = ?, outcome = ?, result_excerpt = ?, error = ?
-        WHERE run_id = ? AND attempt_no = ? AND state IN ('running', 'cancelling') AND lease_expires_at <= ?
-      `).run(
-        settlement.state,
-        now,
-        settlement.outcome,
-        settlement.resultExcerpt ?? null,
-        settlement.error ?? null,
-        ref.runId,
-        ref.attempt,
-        now,
-      ).changes
-      if (changed !== 1) throw new AutomationError('INVALID_TRANSITION', `attempt ${ref.runId}/${ref.attempt} is not expired and dispatched`)
-      this.db.prepare(`
-        UPDATE runs SET state = ?, updated_at = ?, final_session_id = ?, outcome = ?, result_excerpt = ?, error = ?
-        WHERE id = ? AND current_attempt = ? AND state IN ('running', 'cancelling')
-      `).run(
-        settlement.state,
-        now,
-        ref.sessionId,
-        settlement.outcome,
-        settlement.resultExcerpt ?? null,
-        settlement.error ?? null,
-        ref.runId,
-        ref.attempt,
-      )
-      this.event(ref.runId, now, 'recovered-settlement', { attempt: ref.attempt, ...settlement })
-      return this.requireRun(ref.runId)
-    })
+    return settleExpiredAttempt(this.database, ref, settlement, now)
   }
 
   /** Settle an expired dispatched Attempt whose canonical outcome is unknowable. */
@@ -433,14 +210,7 @@ export class AutomationStore {
 
   /** Read the append-only audit stream for one Run. */
   events(id: RunId): RunEvent[] {
-    this.requireRun(id)
-    return (this.db.prepare('SELECT * FROM run_events WHERE run_id = ? ORDER BY seq ASC').all(id) as SqlRow[]).map(row => ({
-      seq: Number(row['seq']),
-      runId: row['run_id'] as RunId,
-      at: Number(row['at']),
-      type: String(row['type']),
-      data: JSON.parse(String(row['data_json'])) as unknown,
-    }))
+    return runEvents(this.database, id)
   }
 
   private currentAttempt(runId: RunId, attempt: number): SqlRow {
@@ -477,133 +247,6 @@ export class AutomationStore {
   }
 }
 
-function initializeSchema(db: DatabaseSync): void {
-  const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
-  if (version !== 0 && version !== SCHEMA_VERSION) {
-    throw new AutomationError('STORE_INCOMPATIBLE', `automation store schema ${version} is not supported by schema ${SCHEMA_VERSION}`)
-  }
-  if (version === SCHEMA_VERSION) return
-  db.exec(`
-    BEGIN IMMEDIATE;
-    CREATE TABLE store_meta (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      schema_version INTEGER NOT NULL,
-      store_id TEXT NOT NULL
-    ) STRICT;
-    INSERT INTO store_meta VALUES (1, ${SCHEMA_VERSION}, '${randomUUID()}');
-    CREATE TABLE runs (
-      id TEXT PRIMARY KEY,
-      state TEXT NOT NULL CHECK (state IN ('queued','claimed','running','cancelling','succeeded','failed','cancelled','indeterminate')),
-      prompt TEXT NOT NULL CHECK (length(trim(prompt)) > 0),
-      target_json TEXT NOT NULL,
-      trigger_json TEXT NOT NULL,
-      trigger_kind TEXT NOT NULL,
-      trigger_source_id TEXT NOT NULL,
-      idempotency_key TEXT,
-      priority INTEGER NOT NULL,
-      max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
-      attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
-      current_attempt INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      available_at INTEGER NOT NULL,
-      cancel_requested_at INTEGER,
-      final_session_id TEXT,
-      outcome TEXT,
-      result_excerpt TEXT,
-      error TEXT,
-      retry_of TEXT REFERENCES runs(id)
-    ) STRICT;
-    CREATE UNIQUE INDEX runs_idempotency ON runs(trigger_kind, trigger_source_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
-    CREATE INDEX runs_claim_order ON runs(state, available_at, priority DESC, created_at, id);
-    CREATE TABLE attempts (
-      run_id TEXT NOT NULL REFERENCES runs(id),
-      attempt_no INTEGER NOT NULL CHECK (attempt_no > 0),
-      state TEXT NOT NULL CHECK (state IN ('claimed','running','cancelling','succeeded','failed','cancelled','lost','indeterminate')),
-      worker_id TEXT NOT NULL,
-      lease_token TEXT NOT NULL UNIQUE,
-      lease_expires_at INTEGER NOT NULL,
-      session_id TEXT NOT NULL UNIQUE,
-      claimed_at INTEGER NOT NULL,
-      dispatched_at INTEGER,
-      finished_at INTEGER,
-      outcome TEXT,
-      result_excerpt TEXT,
-      error TEXT,
-      PRIMARY KEY (run_id, attempt_no)
-    ) STRICT;
-    CREATE INDEX attempts_expired ON attempts(state, lease_expires_at);
-    CREATE TABLE run_events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      run_id TEXT NOT NULL REFERENCES runs(id),
-      at INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      data_json TEXT NOT NULL
-    ) STRICT;
-    CREATE INDEX run_events_by_run ON run_events(run_id, seq);
-    PRAGMA user_version = ${SCHEMA_VERSION};
-    COMMIT;
-  `)
-}
-
-function decodeRun(row: SqlRow): RunView {
-  const state = String(row['state']) as RunState
-  const target = decodeTarget(JSON.parse(String(row['target_json'])) as unknown)
-  const trigger = decodeTrigger(JSON.parse(String(row['trigger_json'])) as unknown)
-  return {
-    id: row['id'] as RunId,
-    state,
-    prompt: String(row['prompt']),
-    target,
-    trigger,
-    priority: Number(row['priority']),
-    maxAttempts: Number(row['max_attempts']),
-    attemptCount: Number(row['attempt_count']),
-    ...(row['current_attempt'] === null ? {} : { currentAttempt: Number(row['current_attempt']) }),
-    createdAt: Number(row['created_at']),
-    updatedAt: Number(row['updated_at']),
-    availableAt: Number(row['available_at']),
-    ...(row['cancel_requested_at'] === null ? {} : { cancelRequestedAt: Number(row['cancel_requested_at']) }),
-    ...(row['final_session_id'] === null ? {} : { finalSessionId: String(row['final_session_id']) }),
-    ...(row['outcome'] === null ? {} : { outcome: String(row['outcome']) as RunOutcome }),
-    ...(row['result_excerpt'] === null ? {} : { resultExcerpt: String(row['result_excerpt']) }),
-    ...(row['error'] === null ? {} : { error: String(row['error']) }),
-    ...(row['retry_of'] === null ? {} : { retryOf: row['retry_of'] as RunId }),
-  }
-}
-
-async function preparePrivateDatabase(path: string): Promise<void> {
-  const parent = dirname(path)
-  await mkdir(parent, { recursive: true, mode: 0o700 })
-  const parentInfo = await lstat(parent)
-  if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink()) throw new Error(`automation database parent is not a real directory: ${parent}`)
-  assertOwned(parentInfo.uid, parent)
-  await chmod(parent, 0o700)
-  try {
-    const file = await lstat(path)
-    if (!file.isFile() || file.isSymbolicLink()) throw new Error(`automation database is not a regular file: ${path}`)
-    assertOwned(file.uid, path)
-    await chmod(path, 0o600)
-  } catch (error) {
-    if (!isNotFound(error)) throw error
-    const handle = await open(path, 'wx', 0o600)
-    await handle.close()
-  }
-}
-
-function assertOwned(owner: number, path: string): void {
-  const uid = process.getuid?.()
-  if (uid !== undefined && owner !== uid) throw new Error(`automation storage path is not owned by the current user: ${path}`)
-}
-
-function busyTimeout(value: number | undefined): number {
-  const timeout = value ?? 5_000
-  if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 2_147_483_647) {
-    throw new AutomationError('INVALID_REQUEST', 'busyTimeoutMs must be an integer between 0 and 2147483647')
-  }
-  return timeout
-}
-
 function validateWorkerLease(workerId: string, now: number, duration: number): void {
   if (workerId.trim() === '') throw new AutomationError('INVALID_REQUEST', 'workerId must not be empty')
   if (!Number.isSafeInteger(now) || now < 0) throw new AutomationError('INVALID_REQUEST', 'now must be a non-negative safe integer')
@@ -612,14 +255,6 @@ function validateWorkerLease(workerId: string, now: number, duration: number): v
   }
 }
 
-function terminal(state: RunState): boolean {
-  return state === 'succeeded' || state === 'failed' || state === 'cancelled' || state === 'indeterminate'
-}
-
 function leaseLost(claim: RunClaim): never {
   throw new AutomationError('LEASE_LOST', `worker ${claim.workerId} no longer owns ${claim.run.id} attempt ${claim.attempt}`)
-}
-
-function isNotFound(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT'
 }
