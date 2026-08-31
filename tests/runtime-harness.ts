@@ -11,7 +11,11 @@ import { AutomationStore } from '../src/store.ts'
 import { AutomationWorker, type WorkerHooks } from '../src/worker.ts'
 
 export const TEST_PROVIDER = 'automation-crash-fixture'
-export const LEASE_MS = 200
+// Keep the lease short enough for process-crash tests while leaving enough
+// headroom for cold SQLite/Agent startup on contended CI runners. The previous
+// 200 ms lease could expire during synchronous startup before its heartbeat
+// interval received an event-loop turn, producing an environmental false loss.
+export const LEASE_MS = 1_000
 
 export interface TestRuntime {
   readonly ctx: Context
