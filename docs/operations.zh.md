@@ -19,9 +19,13 @@
 | `worker --once` | 完成恢复并最多领取一个新 Run 后以 0 退出 | 运维错误以 1 退出 | 有界 smoke test 或调度器入口；只有此模式允许 `--json`。 |
 | `status` | 以 0 退出 | 存储无法打开或 schema 不兼容时以 1 退出 | 有界数据面检查；不证明 Worker 进程存活。 |
 
-`status --json` 返回各状态计数、队列时间信息，以及过期的未 dispatch/已 dispatch 租约数。过期计数表示存在恢复工作，本身不令健康检查失败。Worker 存活应使用 `launchctl print` 或 `systemctl --user is-active` 判断。
+`status --json` 返回各状态计数、队列年龄、活跃 Worker 身份、event retention/consumer watermark，以及过期的未 dispatch/已 dispatch 租约数。任一过期租约会让数据面状态变为 `degraded`；进程存活仍应由 `launchctl print` 或 `systemctl --user is-active` 判断。
 
-收到 SIGTERM 后，DSH launcher 会 dispose Worker：停止轮询、取消活跃 Agent、等待当前 pump，再退出。停止超时必须为持久化 flush 留出空间。第二次信号或 supervisor 超时可能强制终止；下一个 Worker 会按意外崩溃的相同规则恢复。
+使用 `--slots N` 提供进程内并行；每个 slot 都有独立 Worker 身份和 fencing lease，SQLite 在所有 slot/进程之间执行全局 claim 和 concurrency-key 限制。评估 provider quota、工作区隔离和工具副作用后再从 1 开始增加。
+
+收到 SIGTERM 后，Worker 先停止新 claim，等待 `--shutdown-grace-ms` 内的活跃 turn 自然结束；只有超过 grace 才取消剩余 turn。第二次信号或 supervisor 超时可能强制终止；下一 Worker 按意外崩溃规则恢复。
+
+计划升级时先执行 `dsh --profile automation drain --reason upgrade --json`，等活跃数归零后停止 supervisor、升级并启动，最后显式 `resume`。drain 状态持久化，等待超时不会暗中恢复准入。
 
 ## macOS launchd
 
@@ -67,4 +71,4 @@ dsh --profile automation list --json
 dsh --profile automation show <run-id> --json
 ```
 
-不得通过删除或编辑 SQLite 数据库来重试 `indeterminate` Run。该状态表示 canonical turn 可能已经产生外部副作用，必须由操作员审查。
+不得通过删除或编辑 SQLite 数据库来重试 `indeterminate` Run。审查可能的外部副作用后，只能使用 `retry --confirm-indeterminate`。启用 retention 前应先注册 adapter consumer；`purge` 要求 `--confirm`，只删除终态 Automation bookkeeping，绝不删除 canonical Session。

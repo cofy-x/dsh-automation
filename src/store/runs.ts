@@ -10,7 +10,8 @@ import {
   type SubmitRunRequest,
 } from '../domain.ts'
 import { decodeRun, SCHEMA_VERSION, type StoreDatabase } from './database.ts'
-import type { AutomationStatus, RunEvent, SqlRow } from './types.ts'
+import { readQueueControl } from './control.ts'
+import type { AutomationStatus, RetryOptions, RunEvent, SqlRow } from './types.ts'
 
 export function submitRun(database: StoreDatabase, request: SubmitRunRequest, now: number): { readonly run: RunView; readonly created: boolean } {
   const resolved = resolveSubmitRequest(request, now)
@@ -26,9 +27,9 @@ export function submitRun(database: StoreDatabase, request: SubmitRunRequest, no
     database.sql.prepare(`
       INSERT INTO runs (
         id, state, prompt, target_json, trigger_json, trigger_kind, trigger_source_id,
-        idempotency_key, priority, max_attempts, attempt_count, created_at, updated_at,
-        available_at, retry_of
-      ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        trigger_occurrence_id, idempotency_key, concurrency_key, concurrency_limit,
+        priority, max_attempts, attempt_count, created_at, updated_at, available_at, retry_of
+      ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
     `).run(
       id,
       resolved.prompt,
@@ -36,7 +37,10 @@ export function submitRun(database: StoreDatabase, request: SubmitRunRequest, no
       JSON.stringify(resolved.trigger),
       resolved.trigger.kind,
       resolved.trigger.sourceId,
+      resolved.trigger.occurrenceId ?? null,
       key ?? null,
+      resolved.concurrency?.key ?? null,
+      resolved.concurrency?.limit ?? null,
       resolved.priority,
       resolved.maxAttempts,
       now,
@@ -72,18 +76,41 @@ export function automationStatus(database: StoreDatabase, now: number): Automati
       sum(CASE WHEN dispatched_at IS NOT NULL THEN 1 ELSE 0 END) AS dispatched
     FROM attempts WHERE state IN ('claimed', 'running', 'cancelling') AND lease_expires_at <= ?
   `).get(now) as SqlRow
+  const workers = (database.sql.prepare(`
+    SELECT worker_id, count(*) AS active_attempts, min(lease_expires_at) AS oldest_lease_expires_at
+    FROM attempts WHERE state IN ('claimed', 'running', 'cancelling') GROUP BY worker_id ORDER BY worker_id
+  `).all() as SqlRow[]).map(row => ({
+    workerId: String(row['worker_id']),
+    activeAttempts: Number(row['active_attempts']),
+    oldestLeaseExpiresAt: Number(row['oldest_lease_expires_at']),
+  }))
+  const eventFeed = database.sql.prepare(`
+    SELECT
+      max((SELECT coalesce(max(seq), 0) FROM run_events), r.pruned_through_seq) AS newest_seq,
+      r.pruned_through_seq,
+      (SELECT count(*) FROM event_consumers) AS consumers
+    FROM event_retention r WHERE r.singleton = 1
+  `).get() as SqlRow
+  const expiredCounts = {
+    undispatched: Number(expired['undispatched'] ?? 0),
+    dispatched: Number(expired['dispatched'] ?? 0),
+  }
   const oldestCreatedAt = queued['oldest_created_at'] === null ? undefined : Number(queued['oldest_created_at'])
   return {
-    health: 'ok',
+    health: expiredCounts.undispatched + expiredCounts.dispatched === 0 ? 'ok' : 'degraded',
     schemaVersion: SCHEMA_VERSION,
     checkedAt: now,
     runs,
     queued: { count: Number(queued['count']), ...(oldestCreatedAt === undefined ? {} : { oldestCreatedAt }) },
     active: runs.claimed + runs.running + runs.cancelling,
-    expired: {
-      undispatched: Number(expired['undispatched'] ?? 0),
-      dispatched: Number(expired['dispatched'] ?? 0),
+    expired: expiredCounts,
+    workers,
+    eventFeed: {
+      newestSeq: Number(eventFeed['newest_seq']),
+      prunedThroughSeq: Number(eventFeed['pruned_through_seq']),
+      consumers: Number(eventFeed['consumers']),
     },
+    control: readQueueControl(database),
   }
 }
 
@@ -110,6 +137,35 @@ export function requestRunCancel(database: StoreDatabase, id: RunId, now: number
     }
     return database.requireRun(id)
   })
+}
+
+export function retryRun(
+  database: StoreDatabase,
+  id: RunId,
+  options: RetryOptions,
+  now: number,
+): { readonly run: RunView; readonly created: boolean } {
+  const original = database.requireRun(id)
+  if (!['failed', 'cancelled', 'indeterminate'].includes(original.state)) {
+    throw new AutomationError('INVALID_TRANSITION', `run ${id} in state ${original.state} cannot be retried`)
+  }
+  if (original.state === 'indeterminate' && options.confirmIndeterminate !== true) {
+    throw new AutomationError('INVALID_REQUEST', `run ${id} is indeterminate; retry requires explicit side-effect acknowledgement`)
+  }
+  return submitRun(database, {
+    prompt: original.prompt,
+    target: original.target,
+    trigger: {
+      kind: 'retry',
+      sourceId: original.id,
+      occurrenceId: options.idempotencyKey,
+      idempotencyKey: options.idempotencyKey,
+    },
+    priority: options.priority ?? original.priority,
+    maxAttempts: options.maxAttempts ?? original.maxAttempts,
+    retryOf: original.id,
+    ...(original.concurrency === undefined ? {} : { concurrency: original.concurrency }),
+  }, now)
 }
 
 export function runEvents(database: StoreDatabase, id: RunId): RunEvent[] {

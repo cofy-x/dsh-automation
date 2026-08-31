@@ -1,7 +1,7 @@
 /** Lease-expiry transitions and recovery ownership fencing. */
 
 import { randomUUID } from 'node:crypto'
-import { AutomationError, type LeaseToken, type RunClaim, type RunId, type RunSettlement, type RunView } from '../domain.ts'
+import { AutomationError, resolveSettlement, type LeaseToken, type RunClaim, type RunId, type RunSettlement, type RunView } from '../domain.ts'
 import type { StoreDatabase } from './database.ts'
 import type { ExpiredAttempt, SqlRow } from './types.ts'
 
@@ -82,6 +82,7 @@ export function reclaimDispatched(
 }
 
 export function settleExpired(database: StoreDatabase, ref: ExpiredAttempt, settlement: RunSettlement, now: number): RunView {
+  resolveSettlement(settlement)
   return database.transaction(() => {
     const changed = database.sql.prepare(`
       UPDATE attempts SET state = ?, finished_at = ?, outcome = ?, result_excerpt = ?, error = ?

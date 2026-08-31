@@ -1,9 +1,11 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AutomationError, type LeaseToken, type RunId, type SubmitRunRequest } from '../src/domain.ts'
 import { AutomationStore } from '../src/store.ts'
+import { createSchemaV1 } from './fixtures/schema-v1.ts'
 
 let root: string | undefined
 let stores: AutomationStore[] = []
@@ -46,6 +48,22 @@ describe('AutomationStore', () => {
     expect(otherSource.created).toBe(true)
     expect(store.list()).toHaveLength(2)
     expect(store.events(first.run.id).map(event => event.type)).toEqual(['submitted'])
+  })
+
+  it('accepts extensible Trigger namespaces and deduplicates one adapter occurrence', async () => {
+    const store = await openStore()
+    const trigger = {
+      kind: 'cron', sourceId: 'cron-7', occurrenceId: '2026-09-01T01:00:00.000Z',
+      idempotencyKey: 'v1:cron-7:2026-09-01T01:00:00.000Z',
+    }
+    const first = store.submit(request({ trigger }), 100)
+    const duplicate = store.submit(request({ prompt: 'must not replace immutable work', trigger }), 101)
+
+    expect(first.created).toBe(true)
+    expect(duplicate).toEqual({ run: first.run, created: false })
+    expect(first.run.trigger).toEqual(trigger)
+    expect(() => store.submit(request({ trigger: { kind: 'Cron', sourceId: 'bad' } }), 102))
+      .toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
   })
 
   it('claims by priority and fences every lease-owned transition', async () => {
@@ -144,8 +162,15 @@ describe('AutomationStore', () => {
     const store = await openStore()
     expect(() => store.submit(request({ target: { kind: 'fresh', cwd: 'relative' } }), 100))
       .toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+    expect(() => store.submit(request({ trigger: { kind: 'webhook', sourceId: 'x'.repeat(257) } }), 100))
+      .toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
     expect(() => store.get('run-missing' as RunId))
       .toThrow(new AutomationError('RUN_NOT_FOUND', 'run run-missing does not exist'))
+    const run = store.submit(request(), 101).run
+    const claim = store.claimNext('worker-a', 102, 100)!
+    expect(() => store.settle(claim, { state: 'succeeded', outcome: 'error' }, 103))
+      .toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+    expect(store.get(run.id).state).toBe('claimed')
   })
 
   it('coordinates claims across two SQLite connections', async () => {
@@ -156,6 +181,149 @@ describe('AutomationStore', () => {
 
     expect(first.claimNext('worker-a', 101, 100)).toBeDefined()
     expect(second.claimNext('worker-b', 101, 100)).toBeUndefined()
+  })
+
+  it('enforces concurrency keys inside the cross-process claim transaction', async () => {
+    const first = await openStore()
+    const second = await AutomationStore.open({ path: join(root!, 'automation.db') })
+    stores.push(second)
+    const concurrency = { key: 'repository:cofy-x/dsh-automation', limit: 1 }
+    first.submit(request({ prompt: 'first', concurrency }), 100)
+    first.submit(request({ prompt: 'second', concurrency }), 101)
+
+    const active = first.claimNext('worker-a', 110, 100)!
+    expect(second.claimNext('worker-b', 110, 100)).toBeUndefined()
+    first.settle(active, { state: 'succeeded', outcome: 'completed' }, 111)
+    expect(second.claimNext('worker-b', 112, 100)?.run.prompt).toBe('second')
+  })
+
+  it('pauses new claims durably while allowing an owned Attempt to settle', async () => {
+    const store = await openStore()
+    store.submit(request({ prompt: 'active' }), 100)
+    store.submit(request({ prompt: 'waiting' }), 101)
+    const active = store.claimNext('worker-a', 102, 100)!
+
+    expect(store.pause('planned maintenance', 103)).toEqual({
+      mode: 'paused', paused: true, pausedAt: 103, reason: 'planned maintenance', updatedAt: 103,
+    })
+    expect(store.claimNext('worker-b', 104, 100)).toBeUndefined()
+    expect(store.settle(active, { state: 'succeeded', outcome: 'completed' }, 105).state).toBe('succeeded')
+    expect(store.resume(106)).toEqual({ mode: 'running', paused: false, updatedAt: 106 })
+    expect(store.claimNext('worker-b', 107, 100)?.run.prompt).toBe('waiting')
+  })
+
+  it('requires explicit acknowledgement to retry indeterminate work and deduplicates the replacement', async () => {
+    const store = await openStore()
+    const original = store.submit(request({ concurrency: { key: 'repo:test', limit: 1 } }), 100).run
+    const claim = store.claimNext('worker-a', 101, 100)!
+    store.markRunning(claim, 102)
+    store.settle(claim, { state: 'indeterminate', outcome: 'interrupted', error: 'unknown side effects' }, 103)
+
+    expect(() => store.retry(original.id, { idempotencyKey: 'operator-1' }, 104))
+      .toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+    const first = store.retry(original.id, { idempotencyKey: 'operator-1', confirmIndeterminate: true }, 105)
+    const duplicate = store.retry(original.id, { idempotencyKey: 'operator-1', confirmIndeterminate: true }, 106)
+    expect(first.created).toBe(true)
+    expect(first.run).toMatchObject({ retryOf: original.id, state: 'queued', concurrency: { key: 'repo:test', limit: 1 } })
+    expect(duplicate).toEqual({ run: first.run, created: false })
+  })
+
+  it('migrates an existing schema v1 store transactionally to v2', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-automation-v1-'))
+    const path = join(root, 'automation.db')
+    createSchemaV1(path)
+
+    const store = await AutomationStore.open({ path })
+    stores.push(store)
+    expect(store.status(20).schemaVersion).toBe(2)
+    expect(store.get('run-v1' as RunId)).toMatchObject({
+      prompt: 'migrate me',
+      trigger: { kind: 'manual', sourceId: 'legacy', occurrenceId: 'old-1' },
+    })
+    expect(store.submit(request({
+      trigger: { kind: 'webhook', sourceId: 'github', occurrenceId: 'delivery-1', idempotencyKey: 'github:delivery-1' },
+      concurrency: { key: 'hook:github', limit: 2 },
+    }), 21).run).toMatchObject({ concurrency: { key: 'hook:github', limit: 2 } })
+
+    const freshPath = join(root, 'fresh.db')
+    const fresh = await AutomationStore.open({ path: freshPath })
+    stores.push(fresh)
+    expect(schemaShape(path)).toEqual(schemaShape(freshPath))
+  })
+
+  it('paginates Runs and exposes a replayable trigger-filtered global event cursor', async () => {
+    const store = await openStore()
+    const cronOne = store.submit(request({
+      prompt: 'cron one', trigger: { kind: 'cron', sourceId: 'job-1', occurrenceId: 'one' },
+    }), 100).run
+    store.submit(request({ prompt: 'manual' }), 101)
+    const cronTwo = store.submit(request({
+      prompt: 'cron two', trigger: { kind: 'cron', sourceId: 'job-1', occurrenceId: 'two' },
+    }), 102).run
+
+    const firstRuns = store.query({ triggerKind: 'cron', triggerSourceId: 'job-1', limit: 1 })
+    expect(firstRuns).toMatchObject({ runs: [{ id: cronTwo.id }], hasMore: true })
+    const secondRuns = store.query({
+      triggerKind: 'cron', triggerSourceId: 'job-1', before: firstRuns.nextCursor!, limit: 1,
+    })
+    expect(secondRuns).toEqual({ runs: [cronOne], hasMore: false })
+
+    const firstEvents = store.changes({ triggerKind: 'cron', triggerSourceId: 'job-1', limit: 1 })
+    expect(firstEvents).toMatchObject({ events: [{ runId: cronOne.id, type: 'submitted' }], hasMore: true })
+    const replayed = store.changes({
+      afterSeq: firstEvents.nextSeq, triggerKind: 'cron', triggerSourceId: 'job-1', limit: 10,
+    })
+    expect(replayed).toMatchObject({ events: [{ runId: cronTwo.id, type: 'submitted' }], hasMore: false })
+    expect(new Set([...firstEvents.events, ...replayed.events].map(event => event.seq)).size).toBe(2)
+  })
+
+  it('advances a filtered event consumer across windows containing only other Trigger kinds', async () => {
+    const store = await openStore()
+    store.submit(request({ trigger: { kind: 'manual', sourceId: 'cli' } }), 100)
+    const cron = store.submit(request({ trigger: { kind: 'cron', sourceId: 'job-1' } }), 101).run
+
+    const skipped = store.changes({ afterSeq: 0, triggerKind: 'cron', limit: 1 })
+    expect(skipped).toMatchObject({ events: [], nextSeq: 1, hasMore: true })
+    expect(store.changes({ afterSeq: skipped.nextSeq, triggerKind: 'cron', limit: 1 })).toMatchObject({
+      events: [{ runId: cron.id }], nextSeq: 2, hasMore: false,
+    })
+  })
+
+  it('protects retention with durable consumer checkpoints and expires pruned cursors', async () => {
+    const store = await openStore()
+    const first = store.submit(request({ prompt: 'first' }), 100).run
+    const firstClaim = store.claimNext('worker-a', 101, 100)!
+    store.settle(firstClaim, { state: 'succeeded', outcome: 'completed' }, 102)
+    const firstLastSeq = store.events(first.id).at(-1)!.seq
+    const second = store.submit(request({ prompt: 'second' }), 110).run
+    const secondClaim = store.claimNext('worker-a', 111, 100)!
+    store.settle(secondClaim, { state: 'failed', outcome: 'error', error: 'expected' }, 112)
+    const secondLastSeq = store.events(second.id).at(-1)!.seq
+
+    expect(store.checkpointConsumer('cron.reconciler', firstLastSeq, 120)).toEqual({
+      id: 'cron.reconciler', lastSeq: firstLastSeq, updatedAt: 120,
+    })
+    expect(store.purge(200, 100)).toEqual({
+      purgedRunIds: [first.id], protectedByEventSeq: firstLastSeq,
+    })
+    expect(() => store.changes({ afterSeq: 0 })).toThrow(expect.objectContaining({ code: 'EVENT_CURSOR_EXPIRED' }))
+    expect(store.changes({ afterSeq: firstLastSeq })).toMatchObject({
+      events: expect.arrayContaining([expect.objectContaining({ runId: second.id })]),
+      prunedThroughSeq: firstLastSeq,
+    })
+
+    expect(store.checkpointConsumer('cron.reconciler', secondLastSeq, 121).lastSeq).toBe(secondLastSeq)
+    expect(() => store.checkpointConsumer('cron.reconciler', firstLastSeq, 122))
+      .toThrow(expect.objectContaining({ code: 'INVALID_TRANSITION' }))
+    expect(() => store.checkpointConsumer('webhook.reconciler', secondLastSeq + 1, 122))
+      .toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
+    expect(store.purge(200, 100).purgedRunIds).toEqual([second.id])
+    expect(store.changes({ afterSeq: secondLastSeq })).toMatchObject({
+      events: [], oldestAvailableSeq: 0, prunedThroughSeq: secondLastSeq,
+    })
+    expect(store.consumers()).toEqual([{ id: 'cron.reconciler', lastSeq: secondLastSeq, updatedAt: 121 }])
+    expect(store.removeConsumer('cron.reconciler')).toBe(true)
+    expect(store.removeConsumer('cron.reconciler')).toBe(false)
   })
 
   it('reports bounded store and queue health including expired lease classes', async () => {
@@ -169,8 +337,8 @@ describe('AutomationStore', () => {
     store.markRunning(dispatched, 113)
 
     expect(store.status(123)).toEqual({
-      health: 'ok',
-      schemaVersion: 1,
+      health: 'degraded',
+      schemaVersion: 2,
       checkedAt: 123,
       runs: {
         queued: 1,
@@ -185,8 +353,41 @@ describe('AutomationStore', () => {
       queued: { count: 1, oldestCreatedAt: 100 },
       active: 2,
       expired: { undispatched: 1, dispatched: 1 },
+      workers: [
+        { workerId: 'worker-a', activeAttempts: 1, oldestLeaseExpiresAt: 120 },
+        { workerId: 'worker-b', activeAttempts: 1, oldestLeaseExpiresAt: 122 },
+      ],
+      eventFeed: { newestSeq: 6, prunedThroughSeq: 0, consumers: 0 },
+      control: { mode: 'running', paused: false, updatedAt: 0 },
     })
     expect(() => store.status(-1)).toThrow(expect.objectContaining({ code: 'INVALID_REQUEST' }))
     expect(undispatched.run.prompt).toBe('queued-a')
   })
 })
+
+function schemaShape(path: string): unknown {
+  const database = new DatabaseSync(path, { readOnly: true })
+  try {
+    const tables = database.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name
+    `).all() as { name: string }[]
+    const indexes = database.prepare(`
+      SELECT name, tbl_name, sql FROM sqlite_master
+      WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name
+    `).all()
+    return {
+      tables: tables.map(({ name }) => ({
+        name,
+        columns: database.prepare(`PRAGMA table_xinfo(${quoteIdentifier(name)})`).all(),
+        foreignKeys: database.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(name)})`).all(),
+      })),
+      indexes,
+    }
+  } finally {
+    database.close()
+  }
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`
+}
