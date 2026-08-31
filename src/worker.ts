@@ -27,6 +27,7 @@ export interface WorkerOptions {
   readonly workerId?: string
   readonly pollMs: number
   readonly leaseMs: number
+  readonly shutdownGraceMs?: number
 }
 
 /** Result of one bounded recovery-and-claim cycle. */
@@ -80,8 +81,15 @@ export class AutomationWorker {
       this.stopping = true
       if (this.timer !== undefined) clearInterval(this.timer)
       this.timer = undefined
-      this.activeAgent?.cancel({ kind: 'disposed' })
-      await this.pumpTask
+      const active = this.pumpTask
+      if (active !== undefined) {
+        const graceful = await settlesWithin(active, this.options.shutdownGraceMs ?? 30_000)
+        if (!graceful) {
+          this.log.warn(`dsh-automation: Worker ${this.workerId} exceeded shutdown grace; cancelling active turn`)
+          this.activeAgent?.cancel({ kind: 'disposed' })
+          await active
+        }
+      }
       this.log.info(`dsh-automation: Worker ${this.workerId} stopped`)
     }
   }
@@ -242,4 +250,12 @@ function isCancelling(claim: RunClaim): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+async function settlesWithin(task: Promise<void>, milliseconds: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<false>(resolve => { timer = setTimeout(() => { resolve(false) }, milliseconds) })
+  const settled = await Promise.race([task.then(() => true as const), timeout])
+  if (timer !== undefined) clearTimeout(timer)
+  return settled
 }

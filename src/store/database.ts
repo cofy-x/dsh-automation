@@ -1,11 +1,11 @@
 /** SQLite lifecycle, schema, row decoding, and transaction primitives. */
 
-import { randomUUID } from 'node:crypto'
 import { chmod, lstat, mkdir, open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
   AutomationError,
+  decodeConcurrency,
   decodeTarget,
   decodeTrigger,
   type RunId,
@@ -13,9 +13,9 @@ import {
   type RunView,
 } from '../domain.ts'
 import type { SqlRow, StoreOptions } from './types.ts'
+import { initializeSchema } from './schema.ts'
 
-/** Current on-disk schema. Pre-release readers reject every other version. */
-export const SCHEMA_VERSION = 1
+export { SCHEMA_VERSION } from './schema.ts'
 
 export class StoreDatabase {
   private constructor(readonly sql: DatabaseSync) {}
@@ -74,76 +74,8 @@ export class StoreDatabase {
   }
 }
 
-function initializeSchema(db: DatabaseSync): void {
-  const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
-  if (version !== 0 && version !== SCHEMA_VERSION) {
-    throw new AutomationError('STORE_INCOMPATIBLE', `automation store schema ${version} is not supported by schema ${SCHEMA_VERSION}`)
-  }
-  if (version === SCHEMA_VERSION) return
-  db.exec(`
-    BEGIN IMMEDIATE;
-    CREATE TABLE store_meta (
-      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-      schema_version INTEGER NOT NULL,
-      store_id TEXT NOT NULL
-    ) STRICT;
-    INSERT INTO store_meta VALUES (1, ${SCHEMA_VERSION}, '${randomUUID()}');
-    CREATE TABLE runs (
-      id TEXT PRIMARY KEY,
-      state TEXT NOT NULL CHECK (state IN ('queued','claimed','running','cancelling','succeeded','failed','cancelled','indeterminate')),
-      prompt TEXT NOT NULL CHECK (length(trim(prompt)) > 0),
-      target_json TEXT NOT NULL,
-      trigger_json TEXT NOT NULL,
-      trigger_kind TEXT NOT NULL,
-      trigger_source_id TEXT NOT NULL,
-      idempotency_key TEXT,
-      priority INTEGER NOT NULL,
-      max_attempts INTEGER NOT NULL CHECK (max_attempts > 0),
-      attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
-      current_attempt INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      available_at INTEGER NOT NULL,
-      cancel_requested_at INTEGER,
-      final_session_id TEXT,
-      outcome TEXT,
-      result_excerpt TEXT,
-      error TEXT,
-      retry_of TEXT REFERENCES runs(id)
-    ) STRICT;
-    CREATE UNIQUE INDEX runs_idempotency ON runs(trigger_kind, trigger_source_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
-    CREATE INDEX runs_claim_order ON runs(state, available_at, priority DESC, created_at, id);
-    CREATE TABLE attempts (
-      run_id TEXT NOT NULL REFERENCES runs(id),
-      attempt_no INTEGER NOT NULL CHECK (attempt_no > 0),
-      state TEXT NOT NULL CHECK (state IN ('claimed','running','cancelling','succeeded','failed','cancelled','lost','indeterminate')),
-      worker_id TEXT NOT NULL,
-      lease_token TEXT NOT NULL UNIQUE,
-      lease_expires_at INTEGER NOT NULL,
-      session_id TEXT NOT NULL UNIQUE,
-      claimed_at INTEGER NOT NULL,
-      dispatched_at INTEGER,
-      finished_at INTEGER,
-      outcome TEXT,
-      result_excerpt TEXT,
-      error TEXT,
-      PRIMARY KEY (run_id, attempt_no)
-    ) STRICT;
-    CREATE INDEX attempts_expired ON attempts(state, lease_expires_at);
-    CREATE TABLE run_events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      run_id TEXT NOT NULL REFERENCES runs(id),
-      at INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      data_json TEXT NOT NULL
-    ) STRICT;
-    CREATE INDEX run_events_by_run ON run_events(run_id, seq);
-    PRAGMA user_version = ${SCHEMA_VERSION};
-    COMMIT;
-  `)
-}
-
 export function decodeRun(row: SqlRow): RunView {
+  const concurrency = decodeConcurrency(row['concurrency_key'], row['concurrency_limit'])
   return {
     id: row['id'] as RunId,
     state: String(row['state']) as RunView['state'],
@@ -163,6 +95,7 @@ export function decodeRun(row: SqlRow): RunView {
     ...(row['result_excerpt'] === null ? {} : { resultExcerpt: String(row['result_excerpt']) }),
     ...(row['error'] === null ? {} : { error: String(row['error']) }),
     ...(row['retry_of'] === null ? {} : { retryOf: row['retry_of'] as RunId }),
+    ...(concurrency === undefined ? {} : { concurrency }),
   }
 }
 

@@ -5,7 +5,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import z from '@deepseek-ai/schemastery'
 import type { RunClaim, RunId, RunSettlement, RunState, RunView, SubmitRunRequest } from './domain.ts'
-import { AutomationStore, type AutomationStatus, type ExpiredAttempt, type RunEvent } from './store.ts'
+import { AutomationStore, type AutomationStatus, type EventConsumer, type EventPage, type EventQuery, type ExpiredAttempt, type PurgeResult, type QueueControl, type RetryOptions, type RunEvent, type RunPage, type RunQuery } from './store.ts'
 
 export * from './domain.ts'
 export { AutomationStore, SCHEMA_VERSION } from './store.ts'
@@ -58,9 +58,59 @@ export class AutomationService extends Service {
     return this.store.list(state)
   }
 
+  /** Query bounded Runs for management and Trigger reconciliation. */
+  query(query: RunQuery = {}): RunPage {
+    return this.store.query(query)
+  }
+
+  /** Read the durable global Run event stream after a sequence cursor. */
+  changes(query: EventQuery = {}): EventPage {
+    return this.store.changes(query)
+  }
+
+  /** Checkpoint one durable adapter event consumer. */
+  checkpointConsumer(id: string, seq: number): EventConsumer {
+    return this.store.checkpointConsumer(id, seq)
+  }
+
+  /** List registered durable adapter event consumers. */
+  consumers(): EventConsumer[] {
+    return this.store.consumers()
+  }
+
+  /** Explicitly unregister one durable adapter event consumer. */
+  removeConsumer(id: string): boolean {
+    return this.store.removeConsumer(id)
+  }
+
+  /** Purge bounded terminal Automation bookkeeping without deleting Sessions. */
+  purge(before: number, limit: number): PurgeResult {
+    return this.store.purge(before, limit)
+  }
+
   /** Read bounded store and queue health for operators. */
   status(now: number = Date.now()): AutomationStatus {
     return this.store.status(now)
+  }
+
+  /** Read durable queue admission state. */
+  control(): QueueControl {
+    return this.store.control()
+  }
+
+  /** Pause new claims without interrupting active Attempts. */
+  pause(reason?: string): QueueControl {
+    return this.store.pause(reason)
+  }
+
+  /** Enter durable drain mode; callers may wait for status.active to reach zero. */
+  drain(reason?: string): QueueControl {
+    return this.store.drain(reason)
+  }
+
+  /** Resume new claims. */
+  resume(): QueueControl {
+    return this.store.resume()
   }
 
   /** Atomically claim the next eligible Run. */
@@ -111,6 +161,11 @@ export class AutomationService extends Service {
   /** Request cancellation; queued Runs settle immediately. */
   cancel(id: RunId): RunView {
     return this.store.requestCancel(id, Date.now())
+  }
+
+  /** Explicitly create a replacement for a terminal Run. */
+  retry(id: RunId, options: RetryOptions): { readonly run: RunView; readonly created: boolean } {
+    return this.store.retry(id, options)
   }
 }
 

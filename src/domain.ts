@@ -30,10 +30,17 @@ export type RunOutcome = 'completed' | 'blocked' | 'max-tokens' | 'error' | 'abo
 
 /** Trigger provenance used for audit and idempotent submission. */
 export interface TriggerSpec {
-  readonly kind: 'manual'
+  /** Stable lowercase adapter namespace such as manual, cron, or webhook. */
+  readonly kind: string
   readonly sourceId: string
   readonly occurrenceId?: string
   readonly idempotencyKey?: string
+}
+
+/** Optional database-enforced admission group shared across Worker processes. */
+export interface ConcurrencySpec {
+  readonly key: string
+  readonly limit: number
 }
 
 /** A fresh canonical DSH Session target. */
@@ -58,6 +65,7 @@ export interface SubmitRunRequest {
   readonly availableAt?: number
   readonly maxAttempts?: number
   readonly retryOf?: RunId
+  readonly concurrency?: ConcurrencySpec
 }
 
 /** Read-only public projection of one Run. */
@@ -80,6 +88,7 @@ export interface RunView {
   readonly resultExcerpt?: string
   readonly error?: string
   readonly retryOf?: RunId
+  readonly concurrency?: ConcurrencySpec
 }
 
 /** Lease-fenced execution capability returned by an atomic claim. */
@@ -100,10 +109,26 @@ export interface RunSettlement {
   readonly error?: string
 }
 
+/** Validate runtime settlement payloads before they cross the durable boundary. */
+export function resolveSettlement(settlement: RunSettlement): RunSettlement {
+  const allowed: Readonly<Record<RunSettlement['state'], readonly RunOutcome[]>> = {
+    succeeded: ['completed'],
+    failed: ['blocked', 'max-tokens', 'error', 'not-dispatched'],
+    cancelled: ['aborted', 'cancelled'],
+    indeterminate: ['interrupted'],
+  }
+  if (!Object.hasOwn(allowed, settlement.state) || !allowed[settlement.state].includes(settlement.outcome)) {
+    invalid(`outcome ${String(settlement.outcome)} is invalid for settlement state ${String(settlement.state)}`)
+  }
+  optionalBoundedText(settlement.resultExcerpt, 'result excerpt', 2_000)
+  optionalBoundedText(settlement.error, 'settlement error', 4_000)
+  return settlement
+}
+
 /** Stable coded failure from a domain or persistence precondition. */
 export class AutomationError extends Error {
   constructor(
-    readonly code: 'INVALID_REQUEST' | 'RUN_NOT_FOUND' | 'LEASE_LOST' | 'INVALID_TRANSITION' | 'STORE_INCOMPATIBLE',
+    readonly code: 'INVALID_REQUEST' | 'RUN_NOT_FOUND' | 'LEASE_LOST' | 'INVALID_TRANSITION' | 'STORE_INCOMPATIBLE' | 'EVENT_CURSOR_EXPIRED',
     message: string,
   ) {
     super(message)
@@ -116,19 +141,27 @@ export function resolveSubmitRequest(request: SubmitRunRequest, now: number): Re
   if (!Number.isSafeInteger(now) || now < 0) invalid('now must be a non-negative safe integer')
   const prompt = request.prompt.trim()
   if (prompt === '') invalid('prompt must not be empty')
+  if (prompt.length > 1_000_000) invalid('prompt must not exceed 1000000 characters')
   if (request.target.kind !== 'fresh') invalid('target kind must be fresh')
   if (!isAbsolute(request.target.cwd)) invalid('fresh target cwd must be an absolute path')
-  nonEmpty(request.target.preset, 'target preset')
-  nonEmpty(request.target.provider, 'target provider')
-  nonEmpty(request.target.model, 'target model')
+  if (request.target.cwd.length > 4_096) invalid('fresh target cwd must not exceed 4096 characters')
+  optionalBoundedText(request.target.preset, 'target preset', 256)
+  optionalBoundedText(request.target.provider, 'target provider', 256)
+  optionalBoundedText(request.target.model, 'target model', 512)
   if ((request.target.provider === undefined) !== (request.target.model === undefined)) {
     invalid('target provider and model must be supplied together')
   }
-  nonEmpty(request.target.permissionPreset, 'target permission preset')
-  if (request.trigger.kind !== 'manual') invalid('trigger kind must be manual')
-  if (request.trigger.sourceId.trim() === '') invalid('trigger sourceId must not be empty')
-  nonEmpty(request.trigger.occurrenceId, 'trigger occurrenceId')
-  nonEmpty(request.trigger.idempotencyKey, 'trigger idempotencyKey')
+  optionalBoundedText(request.target.permissionPreset, 'target permission preset', 256)
+  triggerKind(request.trigger.kind)
+  boundedText(request.trigger.sourceId, 'trigger sourceId', 256)
+  optionalBoundedText(request.trigger.occurrenceId, 'trigger occurrenceId', 512)
+  optionalBoundedText(request.trigger.idempotencyKey, 'trigger idempotencyKey', 512)
+  if (request.concurrency !== undefined) {
+    boundedText(request.concurrency.key, 'concurrency key', 256)
+    if (!Number.isSafeInteger(request.concurrency.limit) || request.concurrency.limit < 1 || request.concurrency.limit > 1_000) {
+      invalid('concurrency limit must be an integer between 1 and 1000')
+    }
+  }
   const priority = request.priority ?? 0
   if (!Number.isSafeInteger(priority)) invalid('priority must be a safe integer')
   const availableAt = request.availableAt ?? now
@@ -142,17 +175,28 @@ export function resolveSubmitRequest(request: SubmitRunRequest, now: number): Re
 export function decodeTrigger(value: unknown): TriggerSpec {
   const record = plainRecord(value, 'trigger')
   exactKeys(record, ['kind', 'sourceId'], ['occurrenceId', 'idempotencyKey'], 'trigger')
-  if (record['kind'] !== 'manual' || typeof record['sourceId'] !== 'string' || record['sourceId'].trim() === '') {
+  if (typeof record['kind'] !== 'string' || typeof record['sourceId'] !== 'string') {
     invalid('persisted trigger is invalid')
   }
-  const occurrenceId = optionalNonEmptyString(record['occurrenceId'], 'trigger occurrenceId')
-  const idempotencyKey = optionalNonEmptyString(record['idempotencyKey'], 'trigger idempotencyKey')
+  triggerKind(record['kind'])
+  boundedText(record['sourceId'], 'trigger sourceId', 256)
+  const occurrenceId = optionalBoundedString(record['occurrenceId'], 'trigger occurrenceId', 512)
+  const idempotencyKey = optionalBoundedString(record['idempotencyKey'], 'trigger idempotencyKey', 512)
   return {
-    kind: 'manual',
+    kind: record['kind'],
     sourceId: record['sourceId'],
     ...(occurrenceId === undefined ? {} : { occurrenceId }),
     ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
   }
+}
+
+/** Parse and validate persisted concurrency JSON-compatible columns. */
+export function decodeConcurrency(key: unknown, limit: unknown): ConcurrencySpec | undefined {
+  if (key === null && limit === null) return undefined
+  if (typeof key !== 'string' || typeof limit !== 'number') invalid('persisted concurrency is invalid')
+  boundedText(key, 'concurrency key', 256)
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) invalid('persisted concurrency limit is invalid')
+  return { key, limit }
 }
 
 /** Parse and validate persisted Target JSON. */
@@ -162,10 +206,11 @@ export function decodeTarget(value: unknown): TargetSpec {
   if (record['kind'] !== 'fresh' || typeof record['cwd'] !== 'string' || !isAbsolute(record['cwd'])) {
     invalid('persisted target is invalid')
   }
-  const preset = optionalNonEmptyString(record['preset'], 'target preset')
-  const provider = optionalNonEmptyString(record['provider'], 'target provider')
-  const model = optionalNonEmptyString(record['model'], 'target model')
-  const permissionPreset = optionalNonEmptyString(record['permissionPreset'], 'target permission preset')
+  if (record['cwd'].length > 4_096) invalid('persisted target cwd is too long')
+  const preset = optionalBoundedString(record['preset'], 'target preset', 256)
+  const provider = optionalBoundedString(record['provider'], 'target provider', 256)
+  const model = optionalBoundedString(record['model'], 'target model', 512)
+  const permissionPreset = optionalBoundedString(record['permissionPreset'], 'target permission preset', 256)
   return {
     kind: 'fresh',
     cwd: record['cwd'],
@@ -176,13 +221,22 @@ export function decodeTarget(value: unknown): TargetSpec {
   }
 }
 
-function nonEmpty(value: string | undefined, name: string): void {
-  if (value !== undefined && value.trim() === '') invalid(`${name} must not be empty`)
+function optionalBoundedText(value: string | undefined, name: string, maxLength: number): void {
+  if (value !== undefined) boundedText(value, name, maxLength)
 }
 
-function optionalNonEmptyString(value: unknown, name: string): string | undefined {
+function triggerKind(value: string): void {
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(value)) invalid('trigger kind must be a lowercase adapter identifier')
+}
+
+function boundedText(value: string, name: string, maxLength: number): void {
+  if (value.trim() === '' || value.length > maxLength) invalid(`${name} must be between 1 and ${maxLength} characters`)
+}
+
+function optionalBoundedString(value: unknown, name: string, maxLength: number): string | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.trim() === '') invalid(`${name} must be a non-empty string`)
+  if (typeof value !== 'string') invalid(`${name} must be a string`)
+  boundedText(value, name, maxLength)
   return value
 }
 

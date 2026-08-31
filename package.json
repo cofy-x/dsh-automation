@@ -1,7 +1,7 @@
 {
   "name": "dsh-automation",
   "description": "Durable automation Runs and Worker execution for DeepSeek Harness",
-  "version": "0.1.0-alpha.0",
+  "version": "0.2.0-alpha.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -9,7 +9,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "tsc -b && tsdown --config-loader tsx",
+    "build": "node scripts/clean-lib.mjs && tsc -b --force && tsdown --config-loader tsx",
     "check:source-size": "node scripts/check-source-size.mjs",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.vitest.json --pretty false",

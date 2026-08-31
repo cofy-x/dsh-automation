@@ -8,12 +8,20 @@ The alpha command surface is:
 
 ```sh
 dsh --profile automation worker
+dsh --profile automation worker --slots 4 --shutdown-grace-ms 60000
 dsh --profile automation worker --once --json
 dsh --profile automation submit "check the current project's failing tests"
 dsh --profile automation status
 dsh --profile automation list
 dsh --profile automation show <run-id>
 dsh --profile automation cancel <run-id>
+dsh --profile automation retry <run-id>
+dsh --profile automation events --after-seq 0 --json
+dsh --profile automation pause --reason maintenance
+dsh --profile automation drain --reason upgrade
+dsh --profile automation resume
+dsh --profile automation consumers --json
+dsh --profile automation purge --before 2026-08-01T00:00:00Z --confirm
 ```
 
 The durable store uses SQLite WAL, trigger-scoped idempotency keys, leased Attempts, fencing tokens, deterministic Session identifiers, and explicit `indeterminate` recovery when a crashed Agent turn may already have produced external side effects.
@@ -27,7 +35,7 @@ dsh plugin --profile automation add /path/to/dsh-automation
 dsh --profile automation worker
 ```
 
-Use launchd, systemd, or another process supervisor with a single Worker in the first deployment. Management commands are short-lived processes over the same database at `$DSH_HOME/automation/automation.db`; stopping Console does not stop automation. Cron and webhook integrations should remain separate Trigger plugins and submit through `ctx.automation`.
+Use launchd, systemd, or another process supervisor with one slot in the first deployment, then scale slots after reviewing workload isolation. Management commands are short-lived processes over the same database at `$DSH_HOME/automation/automation.db`; stopping Console does not stop automation. Cron and webhook remain separate Trigger plugins: they persist source facts, submit idempotent fresh-Session Runs through `ctx.automation`, and reconcile the durable global event feed.
 
 See [the operations guide](docs/operations.md) for the stable exit contract, health semantics, upgrade procedure, and launchd/systemd templates. The [architecture guide](docs/architecture.md) defines the module boundaries and safety invariants that keep persistence separate from canonical DSH execution. `status` checks the durable store and queue; the supervisor remains the authority for Worker-process liveness.
 
