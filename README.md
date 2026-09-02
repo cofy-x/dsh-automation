@@ -28,14 +28,14 @@ The durable store uses SQLite WAL, trigger-scoped idempotency keys, leased Attem
 
 Inbox-only recovery uses the released Agent contract only: a plugin-owned steering item wakes the resumed loop, and an agent-scoped `agent/pre-step` listener removes that control item before request material is committed. The original identified task message remains canonical and is delivered once; a crash after `turn/start` is never replayed automatically.
 
-Install the checkout into a dedicated profile, then let the operating system supervise the Worker:
+Install the service and its dedicated application bundle into the automation profile, then let the operating system supervise the Worker:
 
 ```sh
-dsh plugin --profile automation add /path/to/dsh-automation
+dsh plugin --profile automation add /path/to/dsh-automation /path/to/dsh-automation/packages/app-bundle
 dsh --profile automation worker
 ```
 
-Use launchd, systemd, or another process supervisor with one slot in the first deployment, then scale slots after reviewing workload isolation. Management commands are short-lived processes over the same database at `$DSH_HOME/automation/automation.db`; stopping Console does not stop automation. Cron and webhook remain separate Trigger plugins: they persist source facts, submit idempotent fresh-Session Runs through `ctx.automation`, and reconcile the durable global event feed.
+`dsh-automation` is a composable service bundle; `dsh-automation-app` owns only the automation profile's command parser and process application. Web, cron, webhook, and other host profiles install only `dsh-automation`, so they cannot acquire a competing command-line application. Use launchd, systemd, or another process supervisor with one slot in the first deployment, then scale slots after reviewing workload isolation. Management commands are short-lived processes over the same database at `$DSH_HOME/automation/automation.db`; stopping Console does not stop automation. Cron and webhook remain separate Trigger plugins: they persist source facts, submit idempotent fresh-Session Runs through `ctx.automation`, and reconcile the durable global event feed.
 
 See [the operations guide](docs/operations.md) for the stable exit contract, health semantics, upgrade procedure, and launchd/systemd templates. The [architecture guide](docs/architecture.md) defines the module boundaries and safety invariants that keep persistence separate from canonical DSH execution. `status` checks the durable store and queue; the supervisor remains the authority for Worker-process liveness.
 

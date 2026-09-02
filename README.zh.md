@@ -28,14 +28,14 @@ dsh --profile automation purge --before 2026-08-01T00:00:00Z --confirm
 
 仅有 inbox 的恢复完全使用已发布的 Agent 契约：插件自有的 steering item 唤醒恢复后的 loop，Agent 作用域内的 `agent/pre-step` 监听器会在提交 request material 前移除该控制项。原始的带标识任务消息仍是 canonical 消息且只投递一次；`turn/start` 之后发生的崩溃绝不会自动重放。
 
-把 checkout 安装到专用 profile，再交给操作系统长期托管 Worker：
+把 service 与专用 application bundle 一起安装到 automation profile，再交给操作系统长期托管 Worker：
 
 ```sh
-dsh plugin --profile automation add /path/to/dsh-automation
+dsh plugin --profile automation add /path/to/dsh-automation /path/to/dsh-automation/packages/app-bundle
 dsh --profile automation worker
 ```
 
-第一阶段建议用 launchd、systemd 或其他 supervisor 运行一个 Worker slot；评估工作区隔离、工具副作用与 provider 配额后再增加 slots。管理命令是访问 `$DSH_HOME/automation/automation.db` 的短进程；Console 退出不会影响自动化。Cron 与 webhook 保持为独立 Trigger 插件：先持久化来源事实，通过 `ctx.automation` 幂等提交 fresh-Session Run，再从全局持久化事件流对账结果。
+`dsh-automation` 是可组合的 service bundle；`dsh-automation-app` 只负责 automation profile 的命令解析与进程应用。Web、cron、webhook 和其他 host profile 只安装 `dsh-automation`，因此不会意外获得第二个命令行应用。第一阶段建议用 launchd、systemd 或其他 supervisor 运行一个 Worker slot；评估工作区隔离、工具副作用与 provider 配额后再增加 slots。管理命令是访问 `$DSH_HOME/automation/automation.db` 的短进程；Console 退出不会影响自动化。Cron 与 webhook 保持为独立 Trigger 插件：先持久化来源事实，通过 `ctx.automation` 幂等提交 fresh-Session Run，再从全局持久化事件流对账结果。
 
 稳定退出契约、健康语义、升级步骤以及 launchd/systemd 模板见[运维指南](docs/operations.zh.md)。[架构指南](docs/architecture.zh.md)定义了模块边界与安全不变量，使持久化编排和 canonical DSH 执行保持分离。`status` 检查持久化存储和队列；Worker 进程是否存活仍以 supervisor 为准。
 

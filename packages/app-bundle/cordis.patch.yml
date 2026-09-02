@@ -1,0 +1,9 @@
+# Dedicated process application for the automation profile. Keep this separate
+# from the service bundle so another application profile can safely consume the
+# durable automation service.
+- insert:
+    - id: dsh-automation-startup
+      name: dsh-automation/startup
+    - id: dsh-automation-app
+      name: dsh-automation/app
+      inject: [automation, automationStartup, agents, agentDefaultModel, sessions, sessionPersistence]

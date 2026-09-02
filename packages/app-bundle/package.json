@@ -1,0 +1,28 @@
+{
+  "name": "dsh-automation-app",
+  "version": "0.2.0-alpha.0",
+  "description": "Dedicated DSH application bundle for dsh-automation workers and management commands",
+  "type": "module",
+  "files": [
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cofy-x/dsh-automation.git",
+    "directory": "packages/app-bundle"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "dsh-automation": "0.2.0-alpha.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

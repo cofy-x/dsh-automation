@@ -1,9 +1,6 @@
-# Bundle patch contributed when dsh-automation is installed into a DSH profile.
+# Composable service bundle contributed to every consuming profile. Application
+# command parsing lives in the separate dsh-automation-app bundle so Web and
+# other hosts can consume the service without mounting a second app.
 - insert:
-    - id: dsh-automation-startup
-      name: dsh-automation/startup
     - id: dsh-automation
       name: dsh-automation
-    - id: dsh-automation-app
-      name: dsh-automation/app
-      inject: [automation, automationStartup, agents, agentDefaultModel, sessions, sessionPersistence]
