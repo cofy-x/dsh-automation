@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
-import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as checkpointPolicy from '@deepseek-ai/dsh-session-checkpoint-policy'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { AutomationService } from '../src/index.ts'
@@ -50,12 +50,12 @@ export async function createTestRuntime(
 ): Promise<TestRuntime> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
-  // AgentLoop 0.1.2-alpha.2 consumes the public projection registry for its
+  // AgentLoop 0.1.2-rc.1 consumes the public projection registry for its
   // durable turn-boundary projection. Production compositions mount this
   // service independently; make the test host topology explicit as well.
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SqliteSessionPersistence, { path: join(root, 'sessions.db') })
+  await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'sessions'), compression: 'none' })
   await ctx.plugin(checkpointPolicy)
   ctx.llm.registerAdapter([TEST_PROVIDER], new FixtureAdapter(beforeResponse))
   const store = await AutomationStore.open({ path: join(root, 'automation.db') })
