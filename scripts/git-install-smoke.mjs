@@ -26,17 +26,30 @@ const ref = argument('--ref')
 if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error('Git-install smoke ref must be an exact commit')
 
 const expected = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const profileDependencies = new Map()
+for (const [name, version] of Object.entries(expected.devDependencies ?? {})) {
+  if (name.startsWith('@deepseek-ai/') && typeof version === 'string') profileDependencies.set(name, version)
+}
+for (const name of Object.keys(expected.peerDependencies ?? {})) {
+  const version = expected.devDependencies?.[name] ?? expected.dependencies?.[name]
+  if (typeof version !== 'string') throw new Error(`no audited smoke version is configured for peer ${name}`)
+  profileDependencies.set(name, version)
+}
+const auditedProfile = [...profileDependencies].map(([name, version]) => `${name}@${version}`)
 const workspace = mkdtempSync(join(tmpdir(), `${PACKAGE_NAME}-git-smoke-`))
 try {
   writeFileSync(join(workspace, 'package.json'), JSON.stringify({ private: true, type: 'module', packageManager: expected.packageManager }, null, 2))
   writeFileSync(join(workspace, 'pnpm-workspace.yaml'), [
     'packages:',
     "  - '.'",
+    'autoInstallPeers: false',
     'allowBuilds:',
     `  '${PACKAGE_NAME}@https://codeload.github.com/${REPOSITORY}/tar.gz/${ref}': true`,
+    '  esbuild: true',
+    '  koffi: true',
     '',
   ].join('\n'))
-  run('pnpm', ['add', '--save-exact', `github:${REPOSITORY}#${ref}`], workspace)
+  run('pnpm', ['add', '--save-exact', `github:${REPOSITORY}#${ref}`, ...auditedProfile], workspace)
 
   const require = createRequire(join(workspace, 'smoke.cjs'))
   const entry = require.resolve(PACKAGE_NAME)
