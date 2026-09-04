@@ -28,6 +28,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Check peer dependency closure
         run: pnpm peers check
+      - run: pnpm run check:source-size
       - run: pnpm run typecheck
       - run: pnpm test
       - run: pnpm run build
@@ -38,13 +39,29 @@ jobs:
       - name: Verify tracked files remain clean
         run: test -z "$(git status --porcelain)"
 
+  git-install-smoke:
+    name: git-install-smoke (node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24 runtime
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10, Node 24 runtime
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0, Node 24 runtime
+        with:
+          node-version: 24
+      - name: Install exact Git revision
+        env:
+          INSTALL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: pnpm run smoke:git -- --ref "$INSTALL_REF"
+
   required:
     name: required
     if: ${{ always() }}
-    needs: [quality]
+    needs: [quality, git-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Require every gate
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
-        run: test "$QUALITY_RESULT" = success
+          SMOKE_RESULT: ${{ needs.git-install-smoke.result }}
+        run: test "$QUALITY_RESULT" = success && test "$SMOKE_RESULT" = success

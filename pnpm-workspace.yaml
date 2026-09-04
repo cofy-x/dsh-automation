@@ -6,6 +6,8 @@ autoInstallPeers: false
 
 allowBuilds:
   esbuild: true
+  # JSONL durability calls MoveFileExW with write-through publication on Windows.
+  koffi: true
 
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cosmokit@1.8.3'
