@@ -191,7 +191,7 @@ export class AutomationWorker {
         heartbeat = undefined
         if (leaseFailure !== undefined) throw leaseFailure
         await this.ctx.sessions.flush(handle.agent.session)
-        const settlement = settlementFromEvents(handle.agent.session.events)
+        const settlement = settlementFromEvents(handle.agent.session.snapshotEvents())
           ?? indeterminate('resumed canonical Session settled without a terminal turn')
         await this.checkpoint('before-settle', claim)
         this.automation.settle(claim, settlement, Date.now())
@@ -217,7 +217,7 @@ export class AutomationWorker {
       heartbeat = undefined
       if (leaseFailure !== undefined) throw leaseFailure
       await this.ctx.sessions.flush(handle.agent.session)
-      const settlement = settlementFromEvents(handle.agent.session.events.slice(firstSeq))
+      const settlement = settlementFromEvents(handle.agent.session.snapshotEvents(firstSeq))
         ?? indeterminate('canonical Session settled without a terminal turn')
       await this.checkpoint('before-settle', claim)
       this.automation.settle(claim, settlement, Date.now())

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import SqliteSessionPersistence from '@deepseek-ai/dsh-session-persistence-sqlite'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { RunClaim, RunId } from '../../src/domain.ts'
 import { AutomationStore } from '../../src/store.ts'
 import { recoveryWakeMessage } from '../../src/worker.ts'
@@ -39,7 +39,7 @@ if (crashMode === 'inbox') {
   const claim = store.claimNext('crash-inbox', Date.now(), LEASE_MS) as RunClaim
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(SqliteSessionPersistence, { path: join(crashRoot, 'sessions.db') })
+  await ctx.plugin(JsonlSessionPersistence, { root: join(crashRoot, 'sessions'), compression: 'none' })
   const session = ctx.sessions.create(SessionId(claim.sessionId), { meta: { cwd: crashRoot } })
   session.append('agent/inbox/spliced', {
     target: 'next-turn',
