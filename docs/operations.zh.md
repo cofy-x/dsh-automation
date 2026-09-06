@@ -1,15 +1,15 @@
 # dsh-automation 运维指南
 
-应当把一个 `dsh --profile automation worker` 进程独立于 DSH Console 长期运行。操作系统负责进程生命周期，SQLite 负责 Run 与 Attempt 状态，canonical DSH Session 始终是执行事实源。
+应当把一个 `dsh-automation start` 进程独立于 DSH Console 长期运行。操作系统负责进程生命周期，SQLite 负责 Run 与 Attempt 状态，canonical DSH Session 始终是执行事实源。
 
 ## 安装服务前
 
-1. 把 `dsh-automation` 安装到专用的 `automation` profile。
-2. 以将要运行服务的同一系统用户执行 `dsh --profile automation status`。
-3. 执行 `dsh --profile automation worker --once --json`；空队列应返回 `{"recovered":0}` 并以 0 退出。
-4. 用 `command -v dsh` 找到真实可执行文件。supervisor 配置必须使用绝对路径，并与管理命令使用同一个 `DSH_HOME`。
+1. 执行 `dsh-automation init`，幂等创建或修复专用的 `automation` profile。
+2. 以将要运行服务的同一系统用户执行 `dsh-automation doctor`。
+3. 执行 `dsh-automation worker --once --json`；空队列应返回 `{"recovered":0}` 并以 0 退出。
+4. 执行 `dsh-automation service install`；CLI 会生成绝对可执行路径，并保持管理命令与服务使用同一个 `DSH_HOME`。
 
-`examples/` 中的文件是模板；安装前必须替换所有 `__...__` 标记。
+`examples/` 中的文件仅供使用其他配置管理系统的高级用户参考；普通安装不需要手工替换模板。
 
 ## 进程和退出契约
 
@@ -25,11 +25,24 @@
 
 收到 SIGTERM 后，Worker 先停止新 claim，等待 `--shutdown-grace-ms` 内的活跃 turn 自然结束；只有超过 grace 才取消剩余 turn。第二次信号或 supervisor 超时可能强制终止；下一 Worker 按意外崩溃规则恢复。
 
-计划升级时先执行 `dsh --profile automation drain --reason upgrade --json`，等活跃数归零后停止 supervisor、升级并启动，最后显式 `resume`。drain 状态持久化，等待超时不会暗中恢复准入。
+计划升级时先执行 `dsh-automation drain --reason upgrade --json`，等活跃数归零后停止 supervisor、升级并启动，最后显式执行 `dsh-automation resume`。drain 状态持久化，等待超时不会暗中恢复准入。
+
+## 统一的 user service 命令面
+
+```sh
+dsh-automation service install
+dsh-automation service status
+dsh-automation service logs
+dsh-automation service restart
+dsh-automation service stop
+dsh-automation service uninstall
+```
+
+`install` 默认立即启动；使用 `--no-start` 只写入并验证定义。可通过 `--dsh-home`、`--profile`、`--slots` 和 `--shutdown-grace-ms` 固化服务参数。定义属于当前用户，不需要 root。
 
 ## macOS launchd
 
-复制 `examples/launchd/com.cofy-x.dsh-automation.plist`，替换可执行文件、home 和日志目录标记，并先创建日志目录。然后以登录用户安装：
+CLI 将定义写入 `~/Library/LaunchAgents/com.cofy-x.dsh-automation.plist`，日志写入 `~/.dsh/automation/logs/`。等价的底层检查命令是：
 
 ```sh
 plutil -lint ~/Library/LaunchAgents/com.cofy-x.dsh-automation.plist
@@ -48,7 +61,7 @@ launchctl bootout "gui/$(id -u)/com.cofy-x.dsh-automation"
 
 ## Linux systemd 用户服务
 
-把 `examples/systemd/dsh-automation.service` 复制到 `~/.config/systemd/user/`，替换可执行文件标记，然后加载并启用：
+CLI 将定义写入 `~/.config/systemd/user/dsh-automation.service`，加载并启用。等价的底层检查命令是：
 
 ```sh
 systemctl --user daemon-reload
@@ -66,9 +79,9 @@ journalctl --user -u dsh-automation.service -f
 发生故障时，应先保存以下证据，再考虑数据库操作：
 
 ```sh
-dsh --profile automation status --json
-dsh --profile automation list --json
-dsh --profile automation show <run-id> --json
+dsh-automation status --json
+dsh-automation list --json
+dsh-automation show <run-id> --json
 ```
 
 不得通过删除或编辑 SQLite 数据库来重试 `indeterminate` Run。审查可能的外部副作用后，只能使用 `retry --confirm-indeterminate`。启用 retention 前应先注册 adapter consumer；`purge` 要求 `--confirm`，只删除终态 Automation bookkeeping，绝不删除 canonical Session。

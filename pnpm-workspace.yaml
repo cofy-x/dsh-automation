@@ -4,10 +4,23 @@ packages:
 
 autoInstallPeers: false
 
+peerDependencyRules:
+  # Optional browser UI peers are not used by the headless automation CLI.
+  ignoreMissing:
+    - react
+    - react-dom
+
 allowBuilds:
+  # DSH restores the executable bit on its packaged PTY spawn helper.
+  '@deepseek-ai/dsh-subprocess-local': true
+  # Optional model SDK lifecycle scripts are not required at runtime.
+  '@google/genai': false
   esbuild: true
   # JSONL durability calls MoveFileExW with write-through publication on Windows.
   koffi: true
+  # DSH's persistent shell backend requires the reviewed native PTY binding.
+  node-pty: true
+  protobufjs: false
 
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cosmokit@1.8.3'

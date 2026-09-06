@@ -12,6 +12,7 @@
 - Every state transition is a SQLite transaction. Lease-fenced mutations match Run ID, Attempt number, and lease token.
 - Never automatically retry a Run after canonical DSH evidence shows an interrupted turn or cannot prove whether model/tool side effects occurred. Settle it as `indeterminate`.
 - Drive work only through public DSH services. Do not import source files, private package paths, or duplicate Agent loop behavior.
+- Keep the user-facing `dsh-automation` executable in `packages/cli`. It may install profiles, delegate application commands, diagnose the product, and manage operating-system user services; it must not reimplement the durable store or DSH runtime.
 
 ## Tooling
 
@@ -22,6 +23,7 @@ pnpm run typecheck
 pnpm test
 pnpm run build
 pnpm pack --dry-run
+pnpm run smoke:cli
 ```
 
 Keep Markdown prose paragraphs on one physical line. Preserve MIT licensing. Do not commit credentials, local paths, generated stores, build output, or private endpoints.

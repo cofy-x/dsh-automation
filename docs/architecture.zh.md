@@ -17,10 +17,11 @@
 | `worker/agent-runtime.ts` | 仅通过公开 DSH 服务组装新建/恢复 Agent | 已发布的 DSH Agent 服务 |
 | `worker.ts` / `worker/pool.ts` | 单 slot 执行顺序、多 slot 独立身份、优雅停机与 supervisor 生命周期 | Automation service 与 worker 模块 |
 | `startup.ts` / `startup/management.ts` / `app.ts` | 管理命令、确认门和有界进程退出契约 | 公开 Automation service |
+| `packages/cli` | 用户安装、诊断、命令转发与操作系统 user service 生命周期 | 已发布 DSH CLI 与两个 automation bundle |
 
 依赖方向向内指向 domain 契约和小型持久化/运行时接缝。内部模块不得导入 `app.ts`，Trigger adapter 只依赖公开 `AutomationService` 的提交面。
 
-源码规模检查把每个 `src/**/*.ts` 模块限制在 300 个物理行以内。它只是回归信号，不是架构规则本身；只要一个文件开始拥有多个生命周期或状态机职责，就应当更早拆分。
+源码规模检查把 core 与 CLI 的每个 `src/**/*.ts` 模块限制在 300 个物理行以内。它只是回归信号，不是架构规则本身；只要一个文件开始拥有多个生命周期或状态机职责，就应当更早拆分。
 
 ## 安全不变量
 
