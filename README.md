@@ -38,6 +38,8 @@ Inbox-only recovery uses the released Agent contract only: a plugin-owned steeri
 
 See [the operations guide](docs/operations.md) for the stable exit contract, health semantics, upgrade procedure, and launchd/systemd templates. The [architecture guide](docs/architecture.md) defines the module boundaries and safety invariants that keep persistence separate from canonical DSH execution. `status` checks the durable store and queue; the supervisor remains the authority for Worker-process liveness.
 
+Maintainers should use the repository-owned [coordinated release procedure](docs/releasing.md); the three packages are versioned, packed, published, and registry-tested as one release unit.
+
 ## Development
 
 Requires Node.js 24 or newer and pnpm 11.

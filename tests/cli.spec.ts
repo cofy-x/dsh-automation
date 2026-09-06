@@ -24,6 +24,12 @@ describe('standalone CLI installation', () => {
     expect(packageSpecs({ profile: 'automation', source: false, registry: true }, join(import.meta.dirname, '../packages/cli/src')))
       .toEqual(['dsh-automation@0.2.0-alpha.0', 'dsh-automation-app@0.2.0-alpha.0'])
   })
+
+  it('accepts an explicit pair of release artifacts', () => {
+    expect(packageSpecs({
+      profile: 'automation', source: false, registry: false, serviceSpec: '/tmp/core.tgz', appSpec: '/tmp/app.tgz',
+    })).toEqual(['/tmp/core.tgz', '/tmp/app.tgz'])
+  })
 })
 
 describe('profile forwarding', () => {
