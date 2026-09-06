@@ -40,6 +40,10 @@ jobs:
           pnpm --filter dsh-automation-cli pack --dry-run
       - name: Verify standalone command
         run: pnpm run smoke:cli
+      - name: Verify coordinated release contract
+        run: |
+          pnpm run release:contract
+          pnpm run release:smoke
       - name: Import the built public entry point
         run: node --input-type=module -e "import('./lib/index.js').then((m) => { if (typeof m.default !== 'function' || typeof m.AutomationService !== 'function') process.exit(1) })"
       - name: Verify tracked files remain clean

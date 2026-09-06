@@ -18,7 +18,12 @@
     "smoke:git": "node scripts/git-install-smoke.mjs",
     "test": "vitest run",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.vitest.json --pretty false && pnpm --filter dsh-automation-cli run typecheck",
-    "prepare": "pnpm run build"
+    "prepare": "pnpm run build",
+    "release:check": "pnpm peers check && pnpm run check:source-size && pnpm run typecheck && pnpm test && pnpm run build && pnpm run release:contract && pnpm run release:smoke",
+    "release:contract": "node scripts/release/check.mjs",
+    "release:publish": "node scripts/release/publish.mjs",
+    "release:smoke": "node scripts/release/smoke.mjs",
+    "release:version": "node scripts/release/version.mjs"
   },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

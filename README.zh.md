@@ -38,6 +38,8 @@ dsh-automation status
 
 稳定退出契约、健康语义、升级步骤以及 launchd/systemd 模板见[运维指南](docs/operations.zh.md)。[架构指南](docs/architecture.zh.md)定义了模块边界与安全不变量，使持久化编排和 canonical DSH 执行保持分离。`status` 检查持久化存储和队列；Worker 进程是否存活仍以 supervisor 为准。
 
+维护者应使用仓库自带的[联合发布流程](docs/releasing.zh.md)；三个 package 作为一个 release unit 统一版本、打包、发布并执行 registry 安装验收。
+
 ## 开发
 
 需要 Node.js 24 或更新版本和 pnpm 11。

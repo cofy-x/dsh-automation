@@ -24,6 +24,9 @@ pnpm test
 pnpm run build
 pnpm pack --dry-run
 pnpm run smoke:cli
+pnpm run release:check
 ```
+
+All three npm packages share one exact version and release only through the annotated-tag workflow in `.github/workflows/release.yml`. Real publication is CI-only; local release commands may prepare versions, validate artifacts, and run `release:publish -- --dry-run`, but must not bypass the tag, registry, or provenance gates.
 
 Keep Markdown prose paragraphs on one physical line. Preserve MIT licensing. Do not commit credentials, local paths, generated stores, build output, or private endpoints.
