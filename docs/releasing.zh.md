@@ -30,4 +30,6 @@ npm package 存在后才能登记 trusted publisher。仅第一次发布时，�
 
 工作流在每次发布尝试中打包一次，然后顺序发布 core、app 和 CLI，并在每一步验证 registry metadata。最后从 npm 安装 `dsh-automation-cli@<version>`，在全新 `DSH_HOME` 中执行 `init --registry` 与 `doctor`；只有全部成功后才创建 GitHub Release。
 
+发布完成后，工作流还会对账 npm dist-tag。当某个包的首个版本是预发布版本时，npm 可能自动创建 `latest`；对账会移除这个错误的默认通道，同时保留已有的稳定版 `latest`。如果发布成功但 dist-tag 对账失败，应在引导期 `NPM_TOKEN` 仍已配置时，对精确发布版本运行受保护的 `registry maintenance` 工作流。Trusted publishing 只认证 `npm publish`；dist-tag 维护需要临时 granular token，并且必须继续经过 `npm` environment 的人工审批。
+
 部分发布失败后可以安全重跑。脚本会验证并跳过 registry 中已经存在的精确版本，然后从第一个缺失包继续。npm version 和已经推送的 tag 都不可变：不得删除、覆盖或移动；失败候选必须用新版本和新 tag 修复。

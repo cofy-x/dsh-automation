@@ -30,4 +30,6 @@ Create an annotated `v<version>` tag on the exact verified `main` commit and pus
 
 The workflow packs once per publish attempt, then publishes core, app, and CLI sequentially. After every publish it verifies registry metadata. Finally it installs `dsh-automation-cli@<version>` from npm, runs `init --registry` and `doctor` in a fresh `DSH_HOME`, and only then creates the GitHub Release.
 
+After publication, the workflow also reconciles npm dist-tags. This removes the `latest` tag that npm may create automatically when a package's first release is a prerelease, while preserving an existing stable `latest`. If publication succeeds but tag reconciliation does not, run the protected `registry maintenance` workflow for the exact published version while the bootstrap `NPM_TOKEN` is still configured. Trusted publishing authenticates `npm publish` only; dist-tag maintenance requires a temporary granular token and must remain behind the `npm` environment approval gate.
+
 Publication is retry-safe across partial failures. A rerun verifies and skips an already-published exact version, then continues with the first missing package. npm versions and pushed tags are immutable: never delete, replace, or retarget either one; fix a failed candidate with a new version and tag.
