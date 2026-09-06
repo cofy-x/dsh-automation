@@ -25,7 +25,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - name: Install exact dependency graph
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile
       - name: Check peer dependency closure
         run: pnpm peers check
       - run: pnpm run check:source-size
@@ -34,6 +34,12 @@ jobs:
       - run: pnpm run build
       - name: Verify package contents and lifecycle
         run: pnpm pack --dry-run
+      - name: Verify companion packages
+        run: |
+          pnpm --filter dsh-automation-app pack --dry-run
+          pnpm --filter dsh-automation-cli pack --dry-run
+      - name: Verify standalone command
+        run: pnpm run smoke:cli
       - name: Import the built public entry point
         run: node --input-type=module -e "import('./lib/index.js').then((m) => { if (typeof m.default !== 'function' || typeof m.AutomationService !== 'function') process.exit(1) })"
       - name: Verify tracked files remain clean

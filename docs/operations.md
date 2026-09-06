@@ -1,15 +1,15 @@
 # Operating dsh-automation
 
-Run one `dsh --profile automation worker` process independently of DSH Console. The operating system owns process lifetime; SQLite owns Run and Attempt state; canonical DSH Sessions remain the execution fact source.
+Run one `dsh-automation start` process independently of DSH Console. The operating system owns process lifetime; SQLite owns Run and Attempt state; canonical DSH Sessions remain the execution fact source.
 
 ## Before installing a service
 
-1. Install `dsh-automation` into the dedicated `automation` profile.
-2. Run `dsh --profile automation status` as the same operating-system user that will run the service.
-3. Run `dsh --profile automation worker --once --json`. An empty queue returns a result with `recovered: 0` and an empty `claimedRunIds` array, with exit code 0.
-4. Resolve the real `dsh` executable with `command -v dsh`. Supervisor definitions must use its absolute path and the same `DSH_HOME` as management commands.
+1. Run `dsh-automation init` to create or repair the dedicated `automation` profile.
+2. Run `dsh-automation doctor` as the same operating-system user that will run the service.
+3. Run `dsh-automation worker --once --json`. An empty queue returns a result with `recovered: 0` and an empty `claimedRunIds` array, with exit code 0.
+4. Run `dsh-automation service install`. It records an absolute executable path and the same `DSH_HOME` used by management commands.
 
-The examples under `examples/` are templates. Replace every `__...__` token before installing them.
+The examples under `examples/` are references for advanced configuration management. A normal installation requires no manual token replacement.
 
 ## Process and exit contract
 
@@ -25,11 +25,24 @@ On SIGTERM, the DSH launcher disposes every Worker slot and stops polling. Each 
 
 Use `--slots N` for local parallelism. Each slot has an independent Worker identity and fenced lease; SQLite enforces global claims and per-Run concurrency keys across slots and processes. Start with one slot, then increase only after provider quotas, workspace isolation, and tool side effects have been reviewed.
 
-For a planned upgrade, run `dsh --profile automation drain --reason upgrade --json`, wait for success, stop the supervisor, upgrade, start it, and finally run `dsh --profile automation resume`. Drain state is durable: a timeout does not silently resume admission.
+For a planned upgrade, run `dsh-automation drain --reason upgrade --json`, wait for success, stop the supervisor, upgrade, start it, and finally run `dsh-automation resume`. Drain state is durable: a timeout does not silently resume admission.
+
+## Uniform user-service interface
+
+```sh
+dsh-automation service install
+dsh-automation service status
+dsh-automation service logs
+dsh-automation service restart
+dsh-automation service stop
+dsh-automation service uninstall
+```
+
+`install` starts immediately by default; pass `--no-start` to write and validate only. `--dsh-home`, `--profile`, `--slots`, and `--shutdown-grace-ms` persist service settings. Definitions belong to the current user and need no root access.
 
 ## macOS launchd
 
-Copy `examples/launchd/com.cofy-x.dsh-automation.plist`, replace its executable, home, and log-directory tokens, and create the log directory. Then install it as the logged-in user:
+The CLI writes `~/Library/LaunchAgents/com.cofy-x.dsh-automation.plist` and logs under `~/.dsh/automation/logs/`. Equivalent low-level inspection commands are:
 
 ```sh
 plutil -lint ~/Library/LaunchAgents/com.cofy-x.dsh-automation.plist
@@ -48,7 +61,7 @@ launchctl bootout "gui/$(id -u)/com.cofy-x.dsh-automation"
 
 ## Linux systemd user service
 
-Copy `examples/systemd/dsh-automation.service` to `~/.config/systemd/user/`, replace its executable token, then load and enable it:
+The CLI writes `~/.config/systemd/user/dsh-automation.service`, reloads, and enables it. Equivalent low-level inspection commands are:
 
 ```sh
 systemctl --user daemon-reload
@@ -66,10 +79,10 @@ Stop the service gracefully, upgrade the profile, run `status` and `worker --onc
 For an incident, capture these before changing the database:
 
 ```sh
-dsh --profile automation status --json
-dsh --profile automation list --limit 50 --json
-dsh --profile automation events --after-seq 0 --limit 50 --json
-dsh --profile automation show <run-id> --json
+dsh-automation status --json
+dsh-automation list --limit 50 --json
+dsh-automation events --after-seq 0 --limit 50 --json
+dsh-automation show <run-id> --json
 ```
 
 Never delete or edit the SQLite database to retry an `indeterminate` Run. Use `retry --confirm-indeterminate` only after reviewing possible side effects. Register adapter event consumers before enabling retention; `purge` requires `--confirm`, deletes only terminal automation bookkeeping, and never deletes canonical Sessions.

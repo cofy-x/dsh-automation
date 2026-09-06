@@ -3,7 +3,10 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const MAX_LINES = 300
-const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
+const sourceRoots = [
+  fileURLToPath(new URL('../src/', import.meta.url)),
+  fileURLToPath(new URL('../packages/cli/src/', import.meta.url)),
+]
 
 async function sourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -16,9 +19,11 @@ async function sourceFiles(directory) {
 }
 
 const oversized = []
-for (const path of await sourceFiles(sourceRoot)) {
-  const lines = (await readFile(path, 'utf8')).split('\n').length - 1
-  if (lines > MAX_LINES) oversized.push(`${relative(sourceRoot, path)}: ${lines} lines`)
+for (const sourceRoot of sourceRoots) {
+  for (const path of await sourceFiles(sourceRoot)) {
+    const lines = (await readFile(path, 'utf8')).split('\n').length - 1
+    if (lines > MAX_LINES) oversized.push(`${relative(sourceRoot, path)}: ${lines} lines`)
+  }
 }
 
 if (oversized.length > 0) {

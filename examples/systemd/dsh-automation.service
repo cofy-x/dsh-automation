@@ -8,7 +8,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 Environment=DSH_HOME=%h/.dsh
-ExecStart=__DSH_EXECUTABLE__ --profile automation worker
+ExecStart=__DSH_AUTOMATION_EXECUTABLE__ start
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM

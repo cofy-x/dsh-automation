@@ -6,10 +6,8 @@
   <string>com.cofy-x.dsh-automation</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__DSH_EXECUTABLE__</string>
-    <string>--profile</string>
-    <string>automation</string>
-    <string>worker</string>
+    <string>__DSH_AUTOMATION_EXECUTABLE__</string>
+    <string>start</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

@@ -17,10 +17,11 @@
 | `worker/agent-runtime.ts` | Fresh/resumed Agent composition through public DSH services | Published DSH Agent services |
 | `worker.ts` / `worker/pool.ts` | One-slot execution sequencing and multi-slot supervisor lifecycle | Automation service and worker modules |
 | `startup.ts` / `startup/management.ts` / `app.ts` | Command parsing and bounded process exit contract | Public automation service |
+| `packages/cli` | User installation, diagnostics, command forwarding, and OS user-service lifecycle | Published DSH CLI and both automation bundles |
 
 Dependencies point inward toward domain contracts and small persistence/runtime seams. Internal modules never import `app.ts`, and trigger adapters depend only on the public `AutomationService` submission surface.
 
-The source-size check caps each `src/**/*.ts` module at 300 physical lines. This is a regression signal, not the architecture rule itself: a file should be split earlier whenever it owns more than one lifecycle or state-machine responsibility.
+The source-size check caps every core and CLI `src/**/*.ts` module at 300 physical lines. This is a regression signal, not the architecture rule itself: a file should be split earlier whenever it owns more than one lifecycle or state-machine responsibility.
 
 ## Safety invariants
 

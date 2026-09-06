@@ -2,18 +2,22 @@
   "name": "dsh-automation",
   "description": "Durable automation Runs and Worker execution for DeepSeek Harness",
   "version": "0.2.0-alpha.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "node scripts/clean-lib.mjs && tsc -b --force && tsdown --config-loader tsx",
+    "build": "node scripts/clean-lib.mjs && tsc -b --force && tsdown --config-loader tsx && pnpm --filter dsh-automation-cli run build",
+    "automation": "node packages/cli/lib/cli.js",
     "check:source-size": "node scripts/check-source-size.mjs",
+    "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:git": "node scripts/git-install-smoke.mjs",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.vitest.json --pretty false",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.vitest.json --pretty false && pnpm --filter dsh-automation-cli run typecheck",
     "prepare": "pnpm run build"
   },
   "main": "lib/index.js",
