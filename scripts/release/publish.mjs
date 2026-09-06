@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { packRelease } from './pack.mjs'
 import { distTag, releaseVersion } from './packages.mjs'
+import { reconcileReleaseTags } from './tags.mjs'
 
 const dryRun = process.argv.includes('--dry-run')
 if (!dryRun) verifyCiReleaseContext()
@@ -31,8 +32,13 @@ try {
     execFileSync('npm', ['publish', item.tarball, '--access', 'public', '--tag', tag], { stdio: 'inherit' })
     await waitForPackage(item)
   }
-  if (!dryRun) await registrySmoke(version, workspace)
-  else process.stdout.write('dry-run: registry installation smoke would run after all three publishes\n')
+  if (!dryRun) {
+    await reconcileReleaseTags(version)
+    await registrySmoke(version, workspace)
+  } else {
+    process.stdout.write('dry-run: registry dist-tags would be reconciled after all three publishes\n')
+    process.stdout.write('dry-run: registry installation smoke would run after all three publishes\n')
+  }
 } finally {
   rmSync(workspace, { recursive: true, force: true })
 }
