@@ -23,7 +23,7 @@ export async function reconcileReleaseTags(version = releaseVersion()) {
   for (const { name } of releasePackages) {
     const versions = registryJson(['view', name, 'versions', '--json'])
     const normalizedVersions = Array.isArray(versions) ? versions : [versions]
-    const tags = registryJson(['dist-tag', 'ls', name, '--json'])
+    const tags = registryJson(['view', name, 'dist-tags', '--json'])
     const operations = planReleaseTags(version, normalizedVersions, tags)
 
     for (const operation of operations) {
@@ -49,7 +49,7 @@ async function waitForTags(name, version) {
   for (let attempt = 1; attempt <= 12; attempt += 1) {
     const versions = registryJson(['view', name, 'versions', '--json'])
     const normalizedVersions = Array.isArray(versions) ? versions : [versions]
-    const tags = registryJson(['dist-tag', 'ls', name, '--json'])
+    const tags = registryJson(['view', name, 'dist-tags', '--json'])
     if (planReleaseTags(version, normalizedVersions, tags).length === 0) return
     await new Promise(resolve => setTimeout(resolve, 5_000))
   }
