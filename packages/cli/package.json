@@ -1,6 +1,6 @@
 {
   "name": "dsh-automation-cli",
-  "version": "0.2.0-alpha.0",
+  "version": "0.2.0-alpha.1",
   "description": "Standalone command line and service manager for dsh-automation",
   "type": "module",
   "bin": {
@@ -48,7 +48,7 @@
     "@deepseek-ai/dsh-util-workspace-path": "0.1.2-rc.1",
     "@deepseek-ai/dsh-workflow": "0.1.2-rc.1",
     "commander": "15.0.0",
-    "dsh-automation": "workspace:0.2.0-alpha.0",
-    "dsh-automation-app": "workspace:0.2.0-alpha.0"
+    "dsh-automation": "workspace:0.2.0-alpha.1",
+    "dsh-automation-app": "workspace:0.2.0-alpha.1"
   }
 }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { packRelease } from './pack.mjs'
 import { distTag, releaseVersion } from './packages.mjs'
-import { reconcileReleaseTags } from './tags.mjs'
+import { verifyReleaseTags } from './tags.mjs'
 
 const dryRun = process.argv.includes('--dry-run')
 if (!dryRun) verifyCiReleaseContext()
@@ -33,10 +33,10 @@ try {
     await waitForPackage(item)
   }
   if (!dryRun) {
-    await reconcileReleaseTags(version)
+    await verifyReleaseTags(version)
     await registrySmoke(version, workspace)
   } else {
-    process.stdout.write('dry-run: registry dist-tags would be reconciled after all three publishes\n')
+    process.stdout.write('dry-run: registry dist-tags would be verified after all three publishes\n')
     process.stdout.write('dry-run: registry installation smoke would run after all three publishes\n')
   }
 } finally {
@@ -81,11 +81,15 @@ async function waitForPackage(item) {
 }
 
 function verifyCiReleaseContext() {
-  if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REF_TYPE !== 'tag') {
-    throw new Error('real publication is restricted to the tag-driven GitHub Actions release workflow')
+  if (process.env.GITHUB_ACTIONS !== 'true') {
+    throw new Error('real publication is restricted to the GitHub Actions release workflow')
   }
-  const tag = process.env.GITHUB_REF_NAME
-  if (tag === undefined) throw new Error('GITHUB_REF_NAME is required for publication')
+  const tag = process.env.RELEASE_TAG ?? `v${releaseVersion()}`
+  const releaseSha = process.env.RELEASE_SHA
+  if (releaseSha === undefined) throw new Error('RELEASE_SHA is required for publication')
+  const root = join(import.meta.dirname, '../..')
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+  if (head !== releaseSha) throw new Error(`release checkout ${head} does not match ${releaseSha}`)
   execFileSync(process.execPath, [join(import.meta.dirname, 'check.mjs'), '--tag', tag, '--require-annotated-tag'], {
     stdio: 'inherit',
   })

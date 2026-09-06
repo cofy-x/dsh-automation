@@ -6,6 +6,7 @@ const root = resolve(import.meta.dirname, '..')
 
 function manifest(path: string): {
   name: string
+  version: string
   peerDependencies?: Record<string, string>
   dsh?: { bundle?: { patch?: string } }
 } {
@@ -24,12 +25,13 @@ describe('bundle boundaries', () => {
   })
 
   it('isolates process command parsing in the companion app bundle', () => {
+    const rootManifest = manifest('package.json')
     const packageManifest = manifest('packages/app-bundle/package.json')
     const packageRoot = resolve(root, 'packages/app-bundle')
     const patch = readFileSync(resolve(packageRoot, packageManifest.dsh?.bundle?.patch ?? ''), 'utf8')
 
     expect(packageManifest.name).toBe('dsh-automation-app')
-    expect(packageManifest.peerDependencies?.['dsh-automation']).toBe('0.2.0-alpha.0')
+    expect(packageManifest.peerDependencies?.['dsh-automation']).toBe(rootManifest.version)
     expect(patch).toContain('id: dsh-automation-startup')
     expect(patch).toContain('id: dsh-automation-app')
     expect(patch).not.toContain('id: dsh-automation\n')

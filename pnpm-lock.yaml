@@ -201,10 +201,10 @@ importers:
         specifier: 15.0.0
         version: 15.0.0
       dsh-automation:
-        specifier: workspace:0.2.0-alpha.0
+        specifier: workspace:0.2.0-alpha.1
         version: link:../..
       dsh-automation-app:
-        specifier: workspace:0.2.0-alpha.0
+        specifier: workspace:0.2.0-alpha.1
         version: link:../app-bundle
 
 packages:
