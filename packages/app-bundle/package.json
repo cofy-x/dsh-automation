@@ -1,6 +1,6 @@
 {
   "name": "dsh-automation-app",
-  "version": "0.2.0-alpha.0",
+  "version": "0.2.0-alpha.1",
   "description": "Dedicated DSH application bundle for dsh-automation workers and management commands",
   "type": "module",
   "files": [
@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "dsh-automation": "0.2.0-alpha.0"
+    "dsh-automation": "0.2.0-alpha.1"
   },
   "dsh": {
     "bundle": {

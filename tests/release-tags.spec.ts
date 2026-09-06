@@ -1,37 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { planReleaseTags } from '../scripts/release/tags.mjs'
+import { releaseTagFailures } from '../scripts/release/tags.mjs'
 
-describe('release dist-tag planning', () => {
-  it('removes an automatically-created latest tag from a first prerelease', () => {
+describe('release dist-tag verification', () => {
+  it('accepts npm latest on the first prerelease line', () => {
     expect(
-      planReleaseTags('0.2.0-alpha.0', ['0.2.0-alpha.0'], {
+      releaseTagFailures('0.2.0-alpha.1', ['0.2.0-alpha.0', '0.2.0-alpha.1'], {
         latest: '0.2.0-alpha.0',
-        next: '0.2.0-alpha.0',
+        next: '0.2.0-alpha.1',
       }),
-    ).toEqual([{ action: 'remove', tag: 'latest' }])
+    ).toEqual([])
   })
 
   it('preserves an existing stable latest tag', () => {
     expect(
-      planReleaseTags('0.3.0-alpha.0', ['0.2.0', '0.3.0-alpha.0'], {
+      releaseTagFailures('0.3.0-alpha.0', ['0.2.0', '0.3.0-alpha.0'], {
         latest: '0.2.0',
         next: '0.3.0-alpha.0',
       }),
     ).toEqual([])
   })
 
-  it('restores latest to the highest stable version', () => {
+  it('rejects a prerelease latest after a stable version exists', () => {
     expect(
-      planReleaseTags('1.0.0-beta.0', ['0.9.0', '0.10.0', '1.0.0-beta.0'], {
+      releaseTagFailures('1.0.0-beta.0', ['0.9.0', '1.0.0-beta.0'], {
         latest: '1.0.0-beta.0',
+        next: '1.0.0-beta.0',
       }),
-    ).toEqual([
-      { action: 'add', tag: 'next', version: '1.0.0-beta.0' },
-      { action: 'add', tag: 'latest', version: '0.10.0' },
-    ])
+    ).toEqual(['latest must remain on a stable version'])
   })
 
-  it('points a stable release at latest', () => {
-    expect(planReleaseTags('1.0.0', ['1.0.0'], {})).toEqual([{ action: 'add', tag: 'latest', version: '1.0.0' }])
+  it('requires stable releases on latest', () => {
+    expect(releaseTagFailures('1.0.0', ['1.0.0'], { next: '1.0.0' })).toEqual(['latest must point to 1.0.0'])
   })
 })

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -21,8 +21,9 @@ describe('standalone CLI installation', () => {
   })
 
   it('pins matching registry packages', () => {
+    const { version } = JSON.parse(readFileSync(join(import.meta.dirname, '../packages/cli/package.json'), 'utf8'))
     expect(packageSpecs({ profile: 'automation', source: false, registry: true }, join(import.meta.dirname, '../packages/cli/src')))
-      .toEqual(['dsh-automation@0.2.0-alpha.0', 'dsh-automation-app@0.2.0-alpha.0'])
+      .toEqual([`dsh-automation@${version}`, `dsh-automation-app@${version}`])
   })
 
   it('accepts an explicit pair of release artifacts', () => {

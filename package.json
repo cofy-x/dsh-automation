@@ -1,7 +1,7 @@
 {
   "name": "dsh-automation",
   "description": "Durable automation Runs and Worker execution for DeepSeek Harness",
-  "version": "0.2.0-alpha.0",
+  "version": "0.2.0-alpha.1",
   "publishConfig": {
     "access": "public"
   },
