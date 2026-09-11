@@ -50,6 +50,7 @@ try {
     '',
   ].join('\n'))
   run('pnpm', ['add', '--save-exact', `github:${REPOSITORY}#${ref}`, ...auditedProfile], workspace)
+  run('pnpm', ['peers', 'check'], workspace)
 
   const require = createRequire(join(workspace, 'smoke.cjs'))
   const entry = require.resolve(PACKAGE_NAME)
