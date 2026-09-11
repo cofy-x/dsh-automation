@@ -5,7 +5,6 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as checkpointPolicy from '@deepseek-ai/dsh-session-checkpoint-policy'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { AutomationService } from '../src/index.ts'
 import { AutomationStore } from '../src/store.ts'
 import { AutomationWorker, type WorkerHooks } from '../src/worker.ts'
@@ -50,10 +49,6 @@ export async function createTestRuntime(
 ): Promise<TestRuntime> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
-  // AgentLoop 0.1.2-rc.1 consumes the public projection registry for its
-  // durable turn-boundary projection. Production compositions mount this
-  // service independently; make the test host topology explicit as well.
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'sessions'), compression: 'none' })
   await ctx.plugin(checkpointPolicy)

@@ -68,8 +68,9 @@ describe.skipIf(process.platform === 'win32')('AutomationWorker hard-crash recov
       const run = runtime.store.get(crashed.runId)
       expect(run.error).toBeUndefined()
       expect(run).toMatchObject({ state: 'succeeded', attemptCount: 1, outcome: 'completed' })
-      const session = await runtime.ctx.sessionPersistence.inspect(SessionId(run.finalSessionId as string))
-      const delivered = session.events
+      const handle = await runtime.ctx.sessionPersistence.open(SessionId(run.finalSessionId as string), 'read')
+      const { events } = await handle.read().finally(() => handle.close())
+      const delivered = events
         .filter(event => event.type === 'user/message')
         .map(event => event.type === 'user/message' ? event.data : undefined)
         .filter(message => message !== undefined)

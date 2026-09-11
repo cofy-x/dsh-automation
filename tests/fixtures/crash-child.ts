@@ -54,7 +54,13 @@ if (crashMode === 'inbox') {
       recoveryWakeMessage(),
     ],
   })
-  await ctx.sessions.flush(session)
+  const handle = await ctx.sessionPersistence.create(session.header)
+  try {
+    await handle.append(session.snapshotEvents())
+    await handle.flush()
+  } finally {
+    await handle.close()
+  }
   store.markRunning(claim, Date.now())
   await publish(run.id)
 }

@@ -6,7 +6,7 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-permission-presets'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { RunClaim, RunId, RunSettlement } from './domain.ts'
 import type { AutomationService } from './index.ts'
@@ -124,12 +124,12 @@ export class AutomationWorker {
     let recovered = 0
     for (const ref of this.automation.expiredDispatched(now)) {
       try {
-        const inspection = await this.ctx.sessionPersistence.inspect(SessionId(ref.sessionId))
-        const settlement = settlementFromEvents(inspection.events)
+        const events = await readPersistedEvents(this.ctx, SessionId(ref.sessionId))
+        const settlement = settlementFromEvents(events)
         if (settlement !== undefined) {
           this.automation.settleExpired(ref, settlement, Date.now())
           recovered += 1
-        } else if (safeToResumeBeforeTurn(inspection.events)) {
+        } else if (safeToResumeBeforeTurn(events)) {
           const claim = this.automation.reclaimDispatched(ref, this.workerId, Date.now(), this.options.leaseMs)
           if (claim !== undefined) {
             await this.execute(claim, true)
@@ -242,6 +242,15 @@ export class AutomationWorker {
     await this.hooks.checkpoint?.(point, claim)
   }
 
+}
+
+async function readPersistedEvents(ctx: Context, sessionId: SessionId): Promise<readonly SessionEvent[]> {
+  const handle = await ctx.sessionPersistence.open(sessionId, 'read')
+  try {
+    return (await handle.read()).events
+  } finally {
+    await handle.close()
+  }
 }
 
 function isCancelling(claim: RunClaim): boolean {
